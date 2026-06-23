@@ -1,0 +1,23 @@
+# Bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Binary assets
+wheels/
+*.whl
+*.exe
+*.jpg
+*.ico
+
+# Runtime files
+settings.json
+.env
+
+# Packaging metadata
+*.egg-info/
