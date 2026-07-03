@@ -176,6 +176,37 @@ class DevicePanel(QWidget):
         sn = self.sn_combo.currentText()
         if not sn or sn in ("未找到设备", "错误"):
             return
+
+        # 防呆：必须已选择权重目录
+        if not self._weight_dir:
+            QMessageBox.critical(
+                self, "未选择权重目录",
+                "请先点击【权重目录】按钮，选择包含传感器权重文件的目录后再连接。\n\n"
+                "权重目录中应包含按传感器SN命名的子文件夹（如 S12345678/），"
+                "每个子文件夹中存放对应的ONNX模型文件。"
+            )
+            return
+        valid, err_msg = self._validate_weight_dir(self._weight_dir)
+        if not valid:
+            QMessageBox.critical(
+                self, "权重目录无效",
+                f"当前权重目录校验失败：{err_msg}\n\n"
+                "请重新选择有效的权重目录后再连接。"
+            )
+            return
+
+        # 防呆：每次连接都必须校验当前SN在权重目录中有对应的子文件夹
+        sn_folder = self._find_sn_weight_folder(self._weight_dir, sn)
+        if not sn_folder:
+            QMessageBox.critical(
+                self, "未找到匹配的权重文件",
+                f"在权重目录中未找到与传感器SN({sn})匹配的子文件夹。\n\n"
+                f"请确认权重目录中存在名为\"{sn}\"或包含\"{sn}\"的子文件夹，"
+                "且其中包含ONNX模型文件。\n\n"
+                f"当前权重目录: {self._weight_dir}"
+            )
+            return
+
         try:
             finder = VTSDeviceFinder()
             config = finder.get_device_by_sn(sn)
@@ -254,10 +285,55 @@ class DevicePanel(QWidget):
         except Exception:
             pass
 
+    def _find_sn_weight_folder(self, weight_dir, sn):
+        """在权重目录中查找匹配给定SN的子文件夹，返回文件夹路径或None."""
+        if not weight_dir or not os.path.isdir(weight_dir) or not sn:
+            return None
+        sn_upper = sn.upper()
+        for entry in os.listdir(weight_dir):
+            entry_path = os.path.join(weight_dir, entry)
+            if os.path.isdir(entry_path) and entry.upper() == sn_upper:
+                return entry_path
+        return None
+
+    def _validate_weight_dir(self, d):
+        """校验权重目录是否包含至少一个有效子文件夹（含模型文件且名称像合法SN）."""
+        if not d or not os.path.isdir(d):
+            return False, "目录不存在"
+        has_valid = False
+        for entry in os.listdir(d):
+            entry_path = os.path.join(d, entry)
+            if not os.path.isdir(entry_path):
+                continue
+            # 子文件夹必须含文件
+            has_files = False
+            for f in os.listdir(entry_path):
+                if os.path.isfile(os.path.join(entry_path, f)):
+                    has_files = True
+                    break
+            if not has_files:
+                continue
+            # 子文件夹名必须像合法SN（至少4位字母或数字组合）
+            if len(entry) >= 4 and any(c.isdigit() for c in entry) and any(c.isalpha() for c in entry):
+                has_valid = True
+                break
+        if not has_valid:
+            return False, "所选目录中未找到任何符合命名规范的权重子文件夹\n（子文件夹名应为传感器SN，至少包含字母+数字，如 S12345678 或 GF515I）"
+        return True, ""
+
     def _select_weight_dir(self):
         start = self._weight_dir if self._weight_dir else ""
         d = QFileDialog.getExistingDirectory(self, "选择自定义权重目录", start)
         if d:
+            valid, err_msg = self._validate_weight_dir(d)
+            if not valid:
+                QMessageBox.critical(
+                    self, "权重目录无效",
+                    f"权重目录校验失败：{err_msg}\n\n"
+                    "请选择一个包含按传感器SN命名的子文件夹的目录，"
+                    "每个子文件夹中应包含对应的ONNX权重文件。"
+                )
+                return
             self._weight_dir = d
             name = os.path.basename(d) or d
             self.weight_label.setText(name)

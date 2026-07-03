@@ -3,8 +3,9 @@ from PyQt6.QtCore import Qt
 from app.widgets.device_panel import DevicePanel
 from app.widgets.image_viewer import ImageViewer
 from app.widgets.data_panel import DataPanel
-from app.sensor_worker import SensorWorker
+from app.sensor_worker import SensorWorker, _get_sdk_weights_dir
 from pyvitaisdk import VTSDataType
+import os
 
 
 class MainWindow(QMainWindow):
@@ -153,6 +154,26 @@ class MainWindow(QMainWindow):
                 self._worker.terminate()
                 self._worker.wait()
             self._worker = None
+        # 每次断开/停止时清空 SDK weights 目录，防止残留权重干扰下次连接
+        self._clear_sdk_weights()
+
+    def _clear_sdk_weights(self):
+        """清空 SDK weights 目录中的所有文件（保留目录结构）."""
+        try:
+            sdk_dir = _get_sdk_weights_dir()
+            if os.path.isdir(sdk_dir):
+                for f in os.listdir(sdk_dir):
+                    fpath = os.path.join(sdk_dir, f)
+                    if os.path.isfile(fpath):
+                        os.remove(fpath)
+                    elif os.path.isdir(fpath):
+                        # 清空子目录中的文件
+                        for sf in os.listdir(fpath):
+                            sfpath = os.path.join(fpath, sf)
+                            if os.path.isfile(sfpath):
+                                os.remove(sfpath)
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         self._stop_worker()

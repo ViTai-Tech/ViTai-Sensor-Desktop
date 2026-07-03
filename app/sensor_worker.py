@@ -12,25 +12,33 @@ def _get_sdk_weights_dir():
 
 
 def _apply_custom_weights(weight_dir, sn, sdk_weights):
-    """Match custom weights by SN and copy into SDK weights directory."""   
+    """Match custom weights by SN and copy into SDK weights directory.
+    
+    每次调用会先清空 SDK weights 目录中的旧权重文件，再复制新文件。
+    """   
     if not os.path.isdir(weight_dir):
         return False
 
-    # Try to find folder matching this SN
+    # 先清空 SDK weights 目录中的旧文件（包括子目录）
+    if os.path.isdir(sdk_weights):
+        for f in os.listdir(sdk_weights):
+            fpath = os.path.join(sdk_weights, f)
+            if os.path.isfile(fpath):
+                os.remove(fpath)
+            elif os.path.isdir(fpath):
+                for sf in os.listdir(fpath):
+                    sfpath = os.path.join(fpath, sf)
+                    if os.path.isfile(sfpath):
+                        os.remove(sfpath)
+
+    # 精确匹配：文件夹名必须与SN完全一致（忽略大小写）
     sn_folder = None
-    sn_short = sn.upper()
+    sn_upper = sn.upper()
     for entry in os.listdir(weight_dir):
         entry_path = os.path.join(weight_dir, entry)
-        if os.path.isdir(entry_path) and entry.upper() in sn_short:
+        if os.path.isdir(entry_path) and entry.upper() == sn_upper:
             sn_folder = entry_path
             break
-    if not sn_folder:
-        # Try partial match
-        for entry in os.listdir(weight_dir):
-            entry_path = os.path.join(weight_dir, entry)
-            if os.path.isdir(entry_path) and sn_short in entry.upper():
-                sn_folder = entry_path
-                break
     if not sn_folder:
         return False
 
@@ -68,15 +76,32 @@ class SensorWorker(QThread):
 
     def run(self):
         try:
-            weight_applied = False
             if self._weight_dir:
                 sn = self._config.SN if hasattr(self._config, 'SN') else ''
+                if not sn:
+                    self.error_occurred.emit(
+                        "无法获取传感器序列号(SN)",
+                        "请检查传感器是否正确连接"
+                    )
+                    return
                 sdk_weights = _get_sdk_weights_dir()
                 weight_applied = _apply_custom_weights(self._weight_dir, sn, sdk_weights)
                 if weight_applied:
                     self.weight_status.emit(True, f"已应用自定义权重 ({sn})")
                 else:
-                    self.weight_status.emit(False, f"未找到SN匹配的权重，使用默认")
+                    self.error_occurred.emit(
+                        f"未找到与当前传感器SN({sn})匹配的权重文件夹",
+                        f"请在权重目录中确认是否存在名为\"{sn}\"或包含\"{sn}\"的子文件夹，"
+                        "并确保其中包含ONNX模型文件。\n\n"
+                        f"当前权重目录: {self._weight_dir}"
+                    )
+                    return
+            else:
+                self.error_occurred.emit(
+                    "未设置权重目录",
+                    "请先选择自定义权重目录"
+                )
+                return
 
             self._vtsensor = VTSensor(
                 config=self._config,
