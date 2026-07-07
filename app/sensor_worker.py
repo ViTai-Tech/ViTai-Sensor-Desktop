@@ -1,56 +1,43 @@
 import os
-import shutil
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from pyvitaisdk import VTSensor, VTSensorType, VTSDataType, VTSError
 
 
-def _get_sdk_weights_dir():
-    import pyvitaisdk
-    base = os.path.dirname(pyvitaisdk.__file__)
-    return os.path.join(base, "vts", "reconstruct3d", "weights")
+def _find_model_path(weight_dir, sn):
+    """在权重目录中查找匹配SN的模型文件，返回 (model_path, depth_model_path) 或 (None, None).
 
+    查找规则：
+    1. weight_dir/{sn}/{sn}.onnx.enc 作为 force_model_path
+    2. weight_dir/{sn}/ 下任意 .onnx.enc 文件作为 force_model_path
+    3. weight_dir/{sn}/depth/ 下的 .onnx 文件作为 depth model
+    """
+    if not weight_dir or not os.path.isdir(weight_dir) or not sn:
+        return None, None
 
-def _apply_custom_weights(weight_dir, sn, sdk_weights):
-    """Match custom weights by SN and copy into SDK weights directory.
-    
-    每次调用会先清空 SDK weights 目录中的旧权重文件，再复制新文件。
-    """   
-    if not os.path.isdir(weight_dir):
-        return False
-
-    # 先清空 SDK weights 目录中的旧文件（包括子目录）
-    if os.path.isdir(sdk_weights):
-        for f in os.listdir(sdk_weights):
-            fpath = os.path.join(sdk_weights, f)
-            if os.path.isfile(fpath):
-                os.remove(fpath)
-            elif os.path.isdir(fpath):
-                for sf in os.listdir(fpath):
-                    sfpath = os.path.join(fpath, sf)
-                    if os.path.isfile(sfpath):
-                        os.remove(sfpath)
-
-    # 精确匹配：文件夹名必须与SN完全一致（忽略大小写）
-    sn_folder = None
     sn_upper = sn.upper()
+    sn_folder = None
     for entry in os.listdir(weight_dir):
         entry_path = os.path.join(weight_dir, entry)
         if os.path.isdir(entry_path) and entry.upper() == sn_upper:
             sn_folder = entry_path
             break
     if not sn_folder:
-        return False
+        return None, None
 
-    applied = False
-    for f in os.listdir(sn_folder):
-        src = os.path.join(sn_folder, f)
-        if not os.path.isfile(src):
-            continue
-        dst = os.path.join(sdk_weights, f)
-        shutil.copy2(src, dst)
-        applied = True
-    return applied
+    # 查找 force model: 优先 {sn}.onnx.enc，其次任意 .onnx.enc
+    force_model = None
+    preferred = os.path.join(sn_folder, f"{sn}.onnx.enc")
+    if os.path.isfile(preferred):
+        force_model = preferred
+    else:
+        for f in os.listdir(sn_folder):
+            fpath = os.path.join(sn_folder, f)
+            if os.path.isfile(fpath) and f.endswith(".onnx.enc"):
+                force_model = fpath
+                break
+
+    return force_model, None
 
 
 class SensorWorker(QThread):
@@ -76,6 +63,7 @@ class SensorWorker(QThread):
 
     def run(self):
         try:
+            force_model_path = None
             if self._weight_dir:
                 sn = self._config.SN if hasattr(self._config, 'SN') else ''
                 if not sn:
@@ -84,15 +72,15 @@ class SensorWorker(QThread):
                         "请检查传感器是否正确连接"
                     )
                     return
-                sdk_weights = _get_sdk_weights_dir()
-                weight_applied = _apply_custom_weights(self._weight_dir, sn, sdk_weights)
-                if weight_applied:
-                    self.weight_status.emit(True, f"已应用自定义权重 ({sn})")
+                force_model_path, _ = _find_model_path(self._weight_dir, sn)
+                if force_model_path:
+                    self.weight_status.emit(True, f"已加载自定义权重: {os.path.basename(force_model_path)}")
                 else:
                     self.error_occurred.emit(
-                        f"未找到与当前传感器SN({sn})匹配的权重文件夹",
-                        f"请在权重目录中确认是否存在名为\"{sn}\"或包含\"{sn}\"的子文件夹，"
-                        "并确保其中包含ONNX模型文件。\n\n"
+                        f"未找到与当前传感器SN({sn})匹配的权重文件",
+                        f"请在权重目录中确认:\n"
+                        f"1. 存在名为 \"{sn}\" 的子文件夹\n"
+                        f"2. 子文件夹中包含 \"{sn}.onnx.enc\" 或其他 .onnx.enc 文件\n\n"
                         f"当前权重目录: {self._weight_dir}"
                     )
                     return
@@ -103,11 +91,15 @@ class SensorWorker(QThread):
                 )
                 return
 
-            self._vtsensor = VTSensor(
+            kwargs = dict(
                 config=self._config,
                 marker_size=self._marker_size,
                 marker_offsets=self._marker_offsets,
             )
+            if force_model_path:
+                kwargs["force_model_path"] = force_model_path
+
+            self._vtsensor = VTSensor(**kwargs)
             self.sensor_info.emit(str(self._vtsensor.sensor_type.value))
             self._vtsensor.calibrate()
             self.connected.emit()
