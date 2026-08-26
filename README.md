@@ -24,7 +24,7 @@ ViTai 视触觉传感器桌面查看器，基于 PyQt6 构建，支持实时查�
 
 ```bash
 # 1. 安装 SDK
-pip install wheels/linux/pyvitaisdk*-py3-none-linux_x86_64*.whl
+pip install wheels/linux/pyvitaisdk*-py3-none-linux_x86_64.whl
 # Windows:
 # pip install wheels/windows/pyvitaisdk*-py3-none-win_amd64.whl
 
