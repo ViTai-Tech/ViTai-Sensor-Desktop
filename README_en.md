@@ -24,9 +24,9 @@ A desktop viewer for ViTai vision-based tactile sensors, built with PyQt6. Suppo
 
 ```bash
 # 1. Install SDK
-pip install wheels/linux/pyvitaisdk4bc-1.0.9-py3-none-linux_x86_64.whl
+pip install wheels/linux/pyvitaisdk*-py3-none-linux_x86_64.whl
 # Windows:
-# pip install wheels/windows/pyvitaisdk4bc-1.0.9-py3-none-win_amd64.whl
+# pip install wheels/windows/pyvitaisdk*-py3-none-win_amd64.whl
 
 # 2. Install dependencies
 pip install -r requirements.txt
