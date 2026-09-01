@@ -24,32 +24,40 @@ class ForcePlots(QWidget):
         layout.setSpacing(2)
 
         pg.setConfigOptions(antialias=True)
-        bg_color = self.palette().color(self.backgroundRole()).name()
 
-        self.fx_plot = pg.PlotWidget(title="Fx (N)")
-        self.fx_plot.setBackground(bg_color)
-        self.fx_plot.setLabel("left", "N")
-        self.fx_plot.setLabel("bottom", "")
-        self.fx_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fx_plot = self._new_plot()
         self.fx_curve = self.fx_plot.plot(pen=pg.mkPen("#e74c3c", width=2))
-
-        self.fy_plot = pg.PlotWidget(title="Fy (N)")
-        self.fy_plot.setBackground(bg_color)
-        self.fy_plot.setLabel("left", "N")
-        self.fy_plot.setLabel("bottom", "")
-        self.fy_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fy_plot = self._new_plot()
         self.fy_curve = self.fy_plot.plot(pen=pg.mkPen("#2ecc71", width=2))
-
-        self.fz_plot = pg.PlotWidget(title="Fz (N)")
-        self.fz_plot.setBackground(bg_color)
-        self.fz_plot.setLabel("left", "N")
-        self.fz_plot.setLabel("bottom", "")
-        self.fz_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.fz_plot = self._new_plot()
         self.fz_curve = self.fz_plot.plot(pen=pg.mkPen("#3498db", width=2))
 
-        layout.addWidget(self.fx_plot)
-        layout.addWidget(self.fy_plot)
-        layout.addWidget(self.fz_plot)
+        layout.addWidget(self._labeled_row("Fx", self.fx_plot), 1)
+        layout.addWidget(self._labeled_row("Fy", self.fy_plot), 1)
+        layout.addWidget(self._labeled_row("Fz", self.fz_plot), 1)
+
+    def _new_plot(self):
+        p = pg.PlotWidget()
+        p.setBackground("#ffffff")
+        p.showGrid(x=True, y=True, alpha=0.15)
+        p.getPlotItem().hideButtons()
+        p.getPlotItem().hideAxis("left")
+        p.getPlotItem().hideAxis("bottom")
+        p.getPlotItem().setMouseEnabled(x=False, y=False)
+        return p
+
+    def _labeled_row(self, name, plot):
+        w = QWidget()
+        l = QHBoxLayout(w)
+        l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(2)
+        lab = QLabel(name)
+        lab.setFixedWidth(18)
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lab.setStyleSheet("font-weight: bold; font-size: 10px; color: #666;")
+        l.addWidget(lab)
+        l.addWidget(plot, 1)
+        return w
 
     def update_data(self, force6d):
         if force6d is None:

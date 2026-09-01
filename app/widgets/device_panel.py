@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSignal, QTimer, QThread
 from pyvitaisdk import VTSDeviceFinder, VTSError
 
+from app.widgets.checkable_combo import CheckableComboBox
+
 
 class DeviceScanWorker(QThread):
     devices_found = pyqtSignal(list)
@@ -49,7 +51,7 @@ SETTINGS_FILE = _get_settings_path()
 
 
 class DevicePanel(QWidget):
-    connect_request = pyqtSignal(object)
+    connect_request = pyqtSignal(list)
     disconnect_request = pyqtSignal()
     start_request = pyqtSignal()
     stop_request = pyqtSignal()
@@ -57,12 +59,14 @@ class DevicePanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("DevicePanel")
         self.setFixedHeight(80)
         self._connected = False
         self._streaming = False
         self._had_devices = False
         self._scan_worker = None
         self._weight_dir = None
+        self._last_sns = None
         self._setup_ui()
         self._restore_settings()
 
@@ -77,10 +81,11 @@ class DevicePanel(QWidget):
         layout.setSpacing(8)
 
         sn_layout = QHBoxLayout()
-        sn_layout.addWidget(QLabel("序列号:"))
-        self.sn_combo = QComboBox()
-        self.sn_combo.setMinimumWidth(140)
-        sn_layout.addWidget(self.sn_combo)
+        sn_layout.addWidget(QLabel("传感器:"))
+        self.sn_check_combo = CheckableComboBox()
+        self.sn_check_combo.setMinimumWidth(220)
+        self.sn_check_combo.checked_changed.connect(self._update_buttons)
+        sn_layout.addWidget(self.sn_check_combo)
         layout.addLayout(sn_layout)
 
         self.refresh_btn = QPushButton("刷新")
@@ -149,32 +154,43 @@ class DevicePanel(QWidget):
         self._scan_worker.start()
 
     def _on_scan_result(self, sns):
-        # 保存当前选中的 SN，避免刷新时丢失用户选择
-        previous_sn = self.sn_combo.currentText()
-        self.sn_combo.clear()
+        # 设备列表未变化时直接跳过，避免每 2 秒重建下拉框导致滚动位置被重置、
+        # 勾选状态与展开状态被打断（下拉框"弹回顶部"）。
+        sns_tuple = tuple(sorted(sns)) if sns else ()
+        if self._last_sns is not None and sns_tuple == self._last_sns:
+            self._update_buttons()
+            return
+        self._last_sns = sns_tuple
+
+        # 保存当前勾选的 SN，避免刷新时丢失用户选择
+        previous = set(self.sn_check_combo.checked_items())
+        self.sn_check_combo.clear_items()
         if sns:
-            self.sn_combo.addItems(sns)
-            # 恢复之前选中的 SN（如果仍在设备列表中）
-            if previous_sn and previous_sn not in ("未找到设备", "错误"):
-                idx = self.sn_combo.findText(previous_sn)
-                if idx >= 0:
-                    self.sn_combo.setCurrentIndex(idx)
+            self.sn_check_combo.add_select_all_item()
+            for sn in sns:
+                self.sn_check_combo.add_item(sn, checked=(sn in previous))
             self._had_devices = True
         else:
-            self.sn_combo.addItem("未找到设备")
+            self.sn_check_combo.add_placeholder("未找到设备")
             if self._had_devices and self._connected and not self._streaming:
                 self._on_disconnect()
             self._had_devices = False
         self._update_buttons()
 
     def _on_scan_error(self, msg):
-        self.sn_combo.clear()
-        self.sn_combo.addItem("错误")
+        # 出错后强制下一次成功扫描重建列表，避免把"错误"占位误判为未变化
+        self._last_sns = None
+        self.sn_check_combo.clear_items()
+        self.sn_check_combo.add_placeholder("错误")
         self._update_buttons()
 
     def _on_connect(self):
-        sn = self.sn_combo.currentText()
-        if not sn or sn in ("未找到设备", "错误"):
+        sns = self.sn_check_combo.checked_items()
+        if not sns:
+            QMessageBox.warning(
+                self, "未选择传感器",
+                "请先在下拉框中勾选至少一个传感器。"
+            )
             return
 
         # 防呆：必须已选择权重目录
@@ -195,30 +211,34 @@ class DevicePanel(QWidget):
             )
             return
 
-        # 防呆：每次连接都必须校验当前SN在权重目录中有对应的子文件夹
-        sn_folder = self._find_sn_weight_folder(self._weight_dir, sn)
-        if not sn_folder:
-            QMessageBox.critical(
-                self, "未找到匹配的权重文件",
-                f"在权重目录中未找到与传感器SN({sn})匹配的子文件夹。\n\n"
-                f"请确认权重目录中存在名为\"{sn}\"或包含\"{sn}\"的子文件夹，"
-                "且其中包含ONNX模型文件。\n\n"
-                f"当前权重目录: {self._weight_dir}"
-            )
-            return
-
-        try:
-            finder = VTSDeviceFinder()
+        configs = []
+        finder = VTSDeviceFinder()
+        for sn in sns:
+            # 防呆：每个传感器都必须有对应的权重子文件夹
+            if not self._find_sn_weight_folder(self._weight_dir, sn):
+                QMessageBox.critical(
+                    self, "未找到匹配的权重文件",
+                    f"在权重目录中未找到与传感器SN({sn})匹配的子文件夹。\n\n"
+                    f"请确认权重目录中存在名为\"{sn}\"或包含\"{sn}\"的子文件夹，"
+                    "且其中包含ONNX模型文件。\n\n"
+                    f"当前权重目录: {self._weight_dir}"
+                )
+                return
             config = finder.get_device_by_sn(sn)
             if config is None:
-                QMessageBox.warning(self, "连接错误", f"无法获取设备信息，请确认传感器已连接 (SN: {sn})")
+                QMessageBox.warning(
+                    self, "连接错误",
+                    f"无法获取设备信息，请确认传感器已连接 (SN: {sn})"
+                )
                 return
-            self.model_label.setText(f"型号: {config.name}")
-            self.connect_request.emit(config)
-            self._connected = True
-            self._update_buttons()
-        except VTSError as e:
-            QMessageBox.warning(self, "连接错误", f"连接失败: {e}\n{e.suggestion}")
+            configs.append(config)
+
+        self.model_label.setText(f"型号: {len(configs)}个传感器")
+        self.connect_request.emit(configs)
+        self._connected = True
+        self._streaming = True
+        self._refresh_timer.stop()
+        self._update_buttons()
 
     def _on_disconnect(self):
         self.disconnect_request.emit()
@@ -251,10 +271,10 @@ class DevicePanel(QWidget):
         self._update_buttons()
 
     def _update_buttons(self):
-        has_device = self.sn_combo.count() > 0 and self.sn_combo.currentText() not in ("未找到设备", "错误")
-        self.connect_btn.setEnabled(has_device and not self._connected)
+        has_selection = len(self.sn_check_combo.checked_items()) > 0
+        self.connect_btn.setEnabled(has_selection and not self._connected)
         self.refresh_btn.setEnabled(not self._connected)
-        self.sn_combo.setEnabled(not self._connected)
+        self.sn_check_combo.setEnabled(not self._connected)
         self.disconnect_btn.setEnabled(self._connected and not self._streaming)
         self.calib_btn.setEnabled(self._connected)
         self.start_btn.setEnabled(self._connected and not self._streaming)
