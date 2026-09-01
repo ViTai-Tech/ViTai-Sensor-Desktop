@@ -44,6 +44,33 @@ QComboBox QAbstractItemView {
     selection-color: #2b2b2b;
 }
 QScrollArea { border: none; background-color: #ffffff; }
+QScrollBar:vertical {
+    background: transparent;
+    width: 12px;
+    margin: 2px 2px 2px 0;
+}
+QScrollBar::handle:vertical {
+    background: #c0c0c0;
+    border-radius: 4px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #a0a0a0;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+QMessageBox {
+    background-color: #ffffff;
+}
+QMessageBox QLabel {
+    color: #2b2b2b;
+}
 QStatusBar { background-color: #f5f5f5; color: #555555; }
 """
 

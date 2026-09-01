@@ -12,6 +12,7 @@ class CheckableComboBox(QComboBox):
     下拉列表中每个传感器前面都有一个勾选框，可勾选多个；
     顶部提供「全选」选项；收起状态下，行编辑框显示所有已勾选项。
     """
+
     checked_changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -21,29 +22,29 @@ class CheckableComboBox(QComboBox):
         self.lineEdit().setReadOnly(True)
         self.setModel(QStandardItemModel(self))
         self._select_all_row = -1
-        self.view().pressed.connect(self._on_item_pressed)
+        self._updating = 0
+        # 用 itemChanged 捕获所有勾选变化（包括点击复选框本体，而不只是 pressed），
+        # 这样才能在「取消某一个勾选」时同步「全选」状态。
+        self.model().itemChanged.connect(self._on_item_changed)
 
-    def _on_item_pressed(self, index):
-        item = self.model().itemFromIndex(index)
-        if item is None or item.checkState() is None:
+    def _on_item_changed(self, item):
+        if self._updating > 0 or item.checkState() is None:
             return
         m = self.model()
-        if index.row() == self._select_all_row:
-            new_state = (
-                Qt.CheckState.Unchecked
-                if item.checkState() == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
-            for i in range(m.rowCount()):
-                it = m.item(i)
-                if it.checkState() is not None:
-                    it.setCheckState(new_state)
-        else:
-            item.setCheckState(
-                Qt.CheckState.Unchecked
-                if item.checkState() == Qt.CheckState.Checked
-                else Qt.CheckState.Checked
-            )
+        sa = m.item(self._select_all_row) if self._select_all_row >= 0 else None
+        if item is sa:
+            # 点击「全选」：把勾选状态同步到所有可勾选项
+            state = item.checkState()
+            if state == Qt.CheckState.PartiallyChecked:
+                state = Qt.CheckState.Checked
+            self._updating += 1
+            try:
+                for i in range(m.rowCount()):
+                    it = m.item(i)
+                    if it.checkState() is not None:
+                        it.setCheckState(state)
+            finally:
+                self._updating -= 1
         self._update_display()
         self.checked_changed.emit()
 
@@ -100,12 +101,19 @@ class CheckableComboBox(QComboBox):
             total += 1
             if it.checkState() == Qt.CheckState.Checked:
                 checked += 1
-        if total == 0 or checked == 0:
-            sa.setCheckState(Qt.CheckState.Unchecked)
-        elif checked == total:
-            sa.setCheckState(Qt.CheckState.Checked)
-        else:
-            sa.setCheckState(Qt.CheckState.PartiallyChecked)
+        # 只有全部勾选时「全选」才显示勾选，否则一律显示为未勾选
+        # （取消任意一个，就取消「全选」的勾，而不是显示半选状态）
+        target = (
+            Qt.CheckState.Checked
+            if (total > 0 and checked == total)
+            else Qt.CheckState.Unchecked
+        )
+        if sa.checkState() != target:
+            self._updating += 1
+            try:
+                sa.setCheckState(target)
+            finally:
+                self._updating -= 1
 
     def _update_display(self):
         self._sync_select_all()
@@ -124,10 +132,14 @@ class CheckableComboBox(QComboBox):
 
     def set_checked(self, text, checked):
         m = self.model()
-        for i in range(m.rowCount()):
-            it = m.item(i)
-            if it.text() == text and it.checkState() is not None:
-                it.setCheckState(
-                    Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-                )
+        self._updating += 1
+        try:
+            for i in range(m.rowCount()):
+                it = m.item(i)
+                if it.text() == text and it.checkState() is not None:
+                    it.setCheckState(
+                        Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                    )
+        finally:
+            self._updating -= 1
         self._update_display()
