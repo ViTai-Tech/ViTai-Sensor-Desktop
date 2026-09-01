@@ -1,7 +1,7 @@
 import sys
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QSizePolicy
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
 import cv2
 import numpy as np
@@ -15,15 +15,21 @@ class ImageLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(100, 70)
-        # 忽略 pixmap 驱动的 sizeHint，避免首帧到达时行高突然变大；
-        # 由父布局（stretch）决定实际尺寸，内部再按当前尺寸缩放绘制。
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._pixmap = None
         self._source_array = None
         self._loading = False
         self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
         self.setText("无信号")
+
+    def sizeHint(self):
+        # 固定返回稳定尺寸，避免 setPixmap 改变 sizeHint 导致首帧到达时行高突变。
+        # 这里不用 QSizePolicy.Ignored：在 Windows 上 Ignored 会让 pixmap
+        # 无法按实际尺寸渲染，表现为只有第一行显示图像、其余行图片空白。
+        return QSize(160, 120)
+
+    def minimumSizeHint(self):
+        return QSize(100, 70)
 
     def set_loading(self, loading):
         if self._loading == loading:
@@ -70,15 +76,17 @@ class ImageLabel(QLabel):
 
     def _update_display(self):
         if self._pixmap and not self._pixmap.isNull():
-            scaled = self._pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.setPixmap(scaled)
-        else:
-            self.setPixmap(QPixmap())
-            self.setText("无信号")
+            s = self.size()
+            if s.width() > 1 and s.height() > 1:
+                scaled = self._pixmap.scaled(
+                    s,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.setPixmap(scaled)
+                return
+        self.setPixmap(QPixmap())
+        self.setText("无信号")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
