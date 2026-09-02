@@ -1,7 +1,15 @@
 import os
+import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
 from pyvitaisdk import VTSensor, VTSensorType, VTSDataType, VTSError
+
+
+# 串行打开锁：多个 ViTai 传感器必须「逐个」打开+标定，不能 N 个线程同时开。
+# Windows 下 OpenCV 走 CAP_MSMF 后端，多个 VideoCapture 并发 open 会竞态，
+# 导致只有第一个相机能稳定拿帧、其余返回空帧（界面表现为「无信号」）。
+# 串行打开后再各自并行读取即可。Linux 走 V4L2 无此问题，统一串行打开无害。
+_OPEN_LOCK = threading.Lock()
 
 
 def _find_model_path(weight_dir, sn):
@@ -99,9 +107,11 @@ class SensorWorker(QThread):
             if force_model_path:
                 kwargs["force_model_path"] = force_model_path
 
-            self._vtsensor = VTSensor(**kwargs)
+            with _OPEN_LOCK:
+                # 打开+标定在锁内串行进行，避免 MSMF 并发开流竞态
+                self._vtsensor = VTSensor(**kwargs)
+                self._vtsensor.calibrate()
             self.sensor_info.emit(str(self._vtsensor.sensor_type.value))
-            self._vtsensor.calibrate()
             self.connected.emit()
 
             import time
