@@ -4,12 +4,44 @@ import threading
 from PyQt6.QtCore import QThread, pyqtSignal
 from pyvitaisdk import VTSensor, VTSensorType, VTSDataType, VTSError
 
+try:
+    # 帧暂时不可用（区别于相机断开）：采集线程被抢占 CPU 时队列会短暂为空，
+    # 这种错误可重试，不应直接把整个传感器行移除。
+    from pyvitaisdk.common.exceptions import FrameNotAvailableError
+except Exception:  # 安装包结构不一致时退回 None，按致命错误处理
+    FrameNotAvailableError = None
 
-# 串行打开锁：多个 ViTai 传感器必须「逐个」打开+标定，不能 N 个线程同时开。
-# Windows 下 OpenCV 走 CAP_MSMF 后端，多个 VideoCapture 并发 open 会竞态，
-# 导致只有第一个相机能稳定拿帧、其余返回空帧（界面表现为「无信号」）。
-# 串行打开后再各自并行读取即可。Linux 走 V4L2 无此问题，统一串行打开无害。
+
+# 串行打开锁：多个 ViTai 传感器共享 USB2.0 带宽，必须「逐个」打开+标定，
+# 不能 N 个线程同时开（前面已开、正在传图的传感器会抢带宽，导致后面标定极慢/失败）。
 _OPEN_LOCK = threading.Lock()
+
+# 轻量数据：每帧都采，仅从视频流取帧，不含任何推理，CPU 开销可忽略。
+_LIGHT_DATA_TYPES = (
+    VTSDataType.TIME_STAMP,
+    VTSDataType.RAW_IMG,
+    VTSDataType.WARPED_IMG,
+)
+
+# 重量数据：深度重建(ONNX+泊松DST) + marker 光流跟踪 + 六维力估计(MLP)。
+# 这些是主要 CPU 开销来源。多个传感器并发做这些重推理时，会占满 CPU，
+# 导致 MSMF 采集线程饿死（在 Windows 上表现为：只有先启动的那个传感器还能出帧，
+# 其余传感器「无信号」、折线图不动）。SDK 的 collect_sensor_data 本身是线程安全的
+# （每传感器各自持有独立的 ONNX session / 光流跟踪器），问题在 CPU 抢占而非共享状态。
+#
+# 因此：重量数据按独立频率限速（heavy_freq），轻量数据仍按显示频率全速更新，
+# 既保留「并行显示」，又把总 CPU 压低到 Windows 能扛住的水平。
+_HEAVY_DATA_TYPES = (
+    VTSDataType.DIFF_IMG,
+    VTSDataType.DEPTH_MAP,
+    VTSDataType.MARKER_IMG,
+    VTSDataType.MARKER_ORIGIN_VECTOR,
+    VTSDataType.MARKER_CURRENT_VECTOR,
+    VTSDataType.MARKER_OFFSET_VECTOR,
+    VTSDataType.XYZ_VECTOR,
+    VTSDataType.FORCE6D_VECTOR,
+    VTSDataType.SLIP_STATE,
+)
 
 
 def _find_model_path(weight_dir, sn):
@@ -58,13 +90,14 @@ class SensorWorker(QThread):
     weight_status = pyqtSignal(bool, str)
 
     def __init__(self, config, marker_size=9, marker_offsets=None, weight_dir=None,
-                 display_freq=15, parent=None):
+                 display_freq=15, heavy_freq=8, parent=None):
         super().__init__(parent)
         self._config = config
         self._marker_size = marker_size
         self._marker_offsets = marker_offsets or [10, 10, 10, 10]
         self._weight_dir = weight_dir
         self._display_interval = 1.0 / max(display_freq, 1)
+        self._heavy_interval = 1.0 / max(heavy_freq, 1)
         self._running = False
         self._vtsensor = None
         self._do_calibrate = False
@@ -119,31 +152,46 @@ class SensorWorker(QThread):
             frame_count = 0
             last_fps_time = time.time()
             last_display_time = 0.0
+            last_heavy_time = 0.0
+            merged = {}          # 合并后的最新数据：轻量帧只刷新 warp/raw/time，重量结果保留上一帧
+            consecutive_misses = 0
             self._running = True
 
             while self._running:
                 if self._do_calibrate:
                     self._vtsensor.calibrate()
                     self._do_calibrate = False
-
-                data = self._vtsensor.collect_sensor_data(
-                    VTSDataType.TIME_STAMP,
-                    VTSDataType.RAW_IMG,
-                    VTSDataType.WARPED_IMG,
-                    VTSDataType.DIFF_IMG,
-                    VTSDataType.DEPTH_MAP,
-                    VTSDataType.MARKER_IMG,
-                    VTSDataType.MARKER_ORIGIN_VECTOR,
-                    VTSDataType.MARKER_CURRENT_VECTOR,
-                    VTSDataType.MARKER_OFFSET_VECTOR,
-                    VTSDataType.XYZ_VECTOR,
-                    VTSDataType.FORCE6D_VECTOR,
-                    VTSDataType.SLIP_STATE,
-                )
+                    merged = {}
+                    last_heavy_time = 0.0
+                    continue
 
                 now = time.time()
+                if now - last_heavy_time >= self._heavy_interval:
+                    # 重量推理帧：深度 + marker + 力，按 heavy_freq 限速。
+                    data_types = _HEAVY_DATA_TYPES + _LIGHT_DATA_TYPES
+                    last_heavy_time = now
+                else:
+                    # 轻量帧：只取 warp/raw + 时间戳，重量结果沿用上一帧。
+                    data_types = _LIGHT_DATA_TYPES
+
+                try:
+                    data = self._vtsensor.collect_sensor_data(*data_types)
+                except VTSError as e:
+                    if FrameNotAvailableError is not None and isinstance(e, FrameNotAvailableError):
+                        # 采集线程被抢 CPU 导致队列短暂为空：跳过本帧，不整行移除。
+                        # 连续失败过多时才向上抛，避免相机真的卡死时无限空转。
+                        consecutive_misses += 1
+                        if consecutive_misses >= 30:
+                            raise
+                        time.sleep(0.01)
+                        continue
+                    raise
+                consecutive_misses = 0
+
+                merged.update(data)
+
                 if now - last_display_time >= self._display_interval:
-                    self.data_ready.emit(data)
+                    self.data_ready.emit(dict(merged))
                     last_display_time = now
 
                 frame_count += 1
