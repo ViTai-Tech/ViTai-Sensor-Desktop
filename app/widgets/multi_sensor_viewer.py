@@ -1,5 +1,3 @@
-import sys
-
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -7,7 +5,8 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QLabel,
     QFrame,
-    QScrollArea,
+    QStackedWidget,
+    QScrollBar,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -15,9 +14,6 @@ from PyQt6.QtGui import QFont
 from app.widgets.image_viewer import ImageLabel
 from app.widgets.data_panel import ForcePlots
 from pyvitaisdk import VTSDataType
-
-
-_MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
 
 
 class SensorRowWidget(QFrame):
@@ -30,8 +26,23 @@ class SensorRowWidget(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        h = QHBoxLayout(self)
-        h.setContentsMargins(6, 4, 6, 4)
+        # 整体行：右上角放小号滑动状态，下面为名称 + 图像 + 波形
+        v = QVBoxLayout(self)
+        v.setContentsMargins(6, 2, 6, 4)
+        v.setSpacing(2)
+
+        self.slip_label = QLabel("● --")
+        self.slip_label.setFont(QFont("", 9, QFont.Weight.Bold))
+        self.slip_label.setStyleSheet("color: #2ecc71;")
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(0)
+        header.addStretch(1)
+        header.addWidget(self.slip_label)
+        v.addLayout(header)
+
+        h = QHBoxLayout()
+        h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(6)
 
         # 传感器名称（行首）
@@ -42,15 +53,9 @@ class SensorRowWidget(QFrame):
         name.setStyleSheet("font-weight: bold; color: #333; font-size: 12px;")
         h.addWidget(name)
 
-        # 原图 + Fx/Fy/Fz（叠加在原图左上角）
+        # 原图
         self.raw_view = ImageLabel()
-        self.force_label = QLabel("Fx --  Fy --  Fz --")
-        self.force_label.setTextFormat(Qt.TextFormat.RichText)
-        self.force_label.setFont(QFont(_MONO_FONT, 8, QFont.Weight.Bold))
-        self.force_label.setStyleSheet(
-            "background-color: rgba(255,255,255,0.85); padding: 1px 3px; border-radius: 2px;"
-        )
-        raw_tile = self._tile("原图", self.raw_view, overlay=self.force_label)
+        raw_tile = self._tile("原图", self.raw_view)
 
         # 深度图
         self.depth_view = ImageLabel()
@@ -60,29 +65,17 @@ class SensorRowWidget(QFrame):
         self.marker_view = ImageLabel()
         marker_tile = self._tile("标记点", self.marker_view)
 
-        # 折线图（三根独立，竖排一列）+ 滑动状态（右下角）
+        # 折线图（三根独立，竖排一列）：去掉右下角滑动状态后占满整列，随行高伸缩
         self.force_plots = ForcePlots()
         for p in (self.force_plots.fx_plot, self.force_plots.fy_plot, self.force_plots.fz_plot):
-            p.setFixedHeight(34)
-        self.slip_label = QLabel("● --")
-        self.slip_label.setFont(QFont("", 10, QFont.Weight.Bold))
-        self.slip_label.setStyleSheet("color: #2ecc71;")
-
-        chart_col = QWidget()
-        cv = QVBoxLayout(chart_col)
-        cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(2)
-        cv.addWidget(self.force_plots)
-        cv.addStretch(1)
-        slip_row = QHBoxLayout()
-        slip_row.addStretch()
-        slip_row.addWidget(self.slip_label)
-        cv.addLayout(slip_row)
+            p.setMinimumHeight(40)
 
         h.addWidget(raw_tile, 3)
         h.addWidget(depth_tile, 3)
         h.addWidget(marker_tile, 3)
-        h.addWidget(chart_col, 4)
+        h.addWidget(self.force_plots, 4)
+
+        v.addLayout(h, 1)
 
     def _tile(self, title, view, overlay=None):
         w = QWidget()
@@ -120,20 +113,10 @@ class SensorRowWidget(QFrame):
             self.marker_view.set_image(data[VTSDataType.MARKER_IMG])
         if VTSDataType.FORCE6D_VECTOR in data:
             f = data[VTSDataType.FORCE6D_VECTOR]
-            self._set_force(f)
             if f is not None and len(f) >= 6:
                 self.force_plots.update_data(f)
         if VTSDataType.SLIP_STATE in data:
             self._set_slip(data[VTSDataType.SLIP_STATE])
-
-    def _set_force(self, f):
-        if f is None or len(f) < 3:
-            return
-        self.force_label.setText(
-            f'<span style="color:#e74c3c;">Fx {f[0]:.2f}</span> '
-            f'<span style="color:#2ecc71;">Fy {f[1]:.2f}</span> '
-            f'<span style="color:#3498db;">Fz {f[2]:.2f}</span>'
-        )
 
     def _set_slip(self, state):
         if state is None:
@@ -146,49 +129,86 @@ class SensorRowWidget(QFrame):
         self.slip_label.setText(f"● {name}")
 
 
+def _chunk(seq, n):
+    """把序列切成若干长度不超过 n 的小块。"""
+    return [seq[i:i + n] for i in range(0, len(seq), n)]
+
+
 class MultiSensorViewer(QWidget):
-    """按行显示多个传感器内容的滚动区域。"""
+    """按页显示传感器：每页最多 PAGE_SIZE 个，滚轮或右侧滑块翻页。"""
+
+    PAGE_SIZE = 5  # 单页最多显示的传感器数量
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._rows = {}
+        self._rows = {}   # sn -> SensorRowWidget
+        self._sns = []    # 当前传感器序列号（有序，用于分页）
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        self._scroll = QScrollArea()
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
 
-        self._container = QWidget()
-        self._layout = QVBoxLayout(self._container)
-        self._layout.setContentsMargins(8, 8, 8, 8)
-        self._layout.setSpacing(8)
+        self._stack = QStackedWidget()
+        self._scroll = QScrollBar(Qt.Orientation.Vertical)
+        self._scroll.setSingleStep(1)
+        self._scroll.setPageStep(1)
+        self._scroll.valueChanged.connect(self._stack.setCurrentIndex)
 
-        self._scroll.setWidget(self._container)
-        outer.addWidget(self._scroll)
+        body.addWidget(self._stack, 1)
+        body.addWidget(self._scroll)
+        outer.addLayout(body)
+
+    def wheelEvent(self, ev):
+        # 滚轮翻页：下滑下一页，上滑上一页
+        if self._scroll.maximum() <= 0:
+            super().wheelEvent(ev)
+            return
+        dy = ev.angleDelta().y()
+        if dy < 0:
+            self._scroll.setValue(self._scroll.value() + 1)
+        elif dy > 0:
+            self._scroll.setValue(self._scroll.value() - 1)
+        else:
+            super().wheelEvent(ev)
+        ev.accept()
 
     def set_sensors(self, sns):
-        self._clear_rows()
-        for sn in sns:
-            row = SensorRowWidget(sn)
-            self._rows[sn] = row
-            self._layout.addWidget(row, 1)
+        self._sns = list(sns)
+        self._rebuild()
 
     def remove_sensor(self, sn):
-        row = self._rows.pop(sn, None)
-        if row is not None:
-            self._layout.removeWidget(row)
-            row.deleteLater()
+        if sn in self._sns:
+            self._sns.remove(sn)
+        self._rebuild()
 
-    def _clear_rows(self):
-        while self._layout.count() > 0:
-            item = self._layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+    def _rebuild(self):
+        # 清空旧页面与行
+        while self._stack.count() > 0:
+            w = self._stack.widget(0)
+            self._stack.removeWidget(w)
+            w.deleteLater()
         self._rows.clear()
+
+        # 每页最多 PAGE_SIZE 个，不足时行会自动拉伸填满页面
+        for page_sns in _chunk(self._sns, self.PAGE_SIZE):
+            page = QWidget()
+            pl = QVBoxLayout(page)
+            pl.setContentsMargins(8, 8, 8, 8)
+            pl.setSpacing(8)
+            for sn in page_sns:
+                row = SensorRowWidget(sn)
+                self._rows[sn] = row
+                pl.addWidget(row, 1)
+            self._stack.addWidget(page)
+
+        n = self._stack.count()
+        self._scroll.setRange(0, max(0, n - 1))
+        self._scroll.setVisible(n > 1)
+        self._scroll.setValue(0)
 
     def update_data(self, sn, data):
         row = self._rows.get(sn)
@@ -202,7 +222,8 @@ class MultiSensorViewer(QWidget):
                 row.set_loading(loading)
 
     def reset(self):
-        self._clear_rows()
+        self._sns = []
+        self._rebuild()
 
     def count(self):
         return len(self._rows)

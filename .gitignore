@@ -20,5 +20,8 @@ wheels/
 settings.json
 .env
 
+# Model weights (large binaries, not uploaded)
+app/widgets/weight/
+
 # Packaging metadata
 *.egg-info/
