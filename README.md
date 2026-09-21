@@ -73,6 +73,7 @@ sensor-desktop-app/
 ├── requirements.txt        # Python 依赖
 ├── ViTaiViewer.spec        # PyInstaller 打包配置
 ├── app/
+    ├── build_info.py       # 自动生成构建信息
 │   ├── main_window.py      # 主窗口（UI 布局 + 信号连接 + 生命周期）
 │   ├── sensor_worker.py    # 传感器采集工作线程
 │   └── widgets/
