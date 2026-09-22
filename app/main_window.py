@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from app.build_info import GIT_BRANCH, SDK_WHEEL
+from app.build_info import APP_VERSION, GIT_BRANCH, SDK_WHEEL
 from app.widgets.device_panel import DevicePanel
 from app.widgets.multi_sensor_viewer import MultiSensorViewer
 from app.sensor_worker import SensorWorker
@@ -21,7 +21,9 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # 原生系统窗口标题
-        self.setWindowTitle("ViTai 视触觉传感器查看器")
+        self.setWindowTitle(
+            f"ViTai 视触觉传感器查看器 | Version: {APP_VERSION}"
+        )
 
         self.setMinimumSize(1100, 700)
         self.resize(1400, 850)
@@ -44,7 +46,7 @@ class MainWindow(QMainWindow):
         # =========================================================
         # 顶部构建信息栏
         #
-        # 左：Git 分支
+        # 左：应用版本
         # 中：应用名称
         # 右：SDK wheel
         #
@@ -58,13 +60,18 @@ class MainWindow(QMainWindow):
         build_info_layout.setHorizontalSpacing(8)
         build_info_layout.setVerticalSpacing(0)
 
-        # 左侧：Git 分支
-        self.git_branch_label = QLabel(GIT_BRANCH)
-        self.git_branch_label.setAlignment(
+        # 左侧：应用版本
+        self.version_label = QLabel(
+            f"Version: {APP_VERSION}"
+        )
+        self.version_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignVCenter
         )
-        self.git_branch_label.setToolTip(
+
+        # Tooltip 中保留完整构建来源信息，方便调试。
+        self.version_label.setToolTip(
+            f"Version: {APP_VERSION}\n"
             f"Git branch: {GIT_BRANCH}"
         )
 
@@ -77,7 +84,9 @@ class MainWindow(QMainWindow):
         )
 
         # 右侧：SDK wheel
-        self.sdk_wheel_label = QLabel(SDK_WHEEL)
+        self.sdk_wheel_label = QLabel(
+            SDK_WHEEL
+        )
         self.sdk_wheel_label.setAlignment(
             Qt.AlignmentFlag.AlignRight
             | Qt.AlignmentFlag.AlignVCenter
@@ -88,7 +97,7 @@ class MainWindow(QMainWindow):
 
         # 三列布局
         build_info_layout.addWidget(
-            self.git_branch_label,
+            self.version_label,
             0,
             0,
         )
@@ -107,7 +116,7 @@ class MainWindow(QMainWindow):
 
         # 三列等宽。
         #
-        # 即使 SDK_WHEEL 比 GIT_BRANCH 长很多，
+        # 即使 SDK_WHEEL 比 Version 文本长很多，
         # 中间标题仍然保持在窗口的几何中心。
         build_info_layout.setColumnStretch(0, 1)
         build_info_layout.setColumnStretch(1, 1)
@@ -128,8 +137,8 @@ class MainWindow(QMainWindow):
             """
         )
 
-        # 左侧 Git 分支样式
-        self.git_branch_label.setStyleSheet(
+        # 左侧版本号样式
+        self.version_label.setStyleSheet(
             """
             QLabel {
                 font-size: 12px;
