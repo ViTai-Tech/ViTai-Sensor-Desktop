@@ -3,3 +3,6 @@ pyqtgraph>=0.13.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 pyinstaller
+moderngl>=5.10
+# 仅需 Essentials（QtCore/QtGui/QtWidgets/QtOpenGL），不必装带 WebEngine 的完整 PySide6
+PySide6-Essentials>=6.6

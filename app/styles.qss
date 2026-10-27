@@ -1,0 +1,279 @@
+/* ========== Base ========== */
+QMainWindow, QDialog {
+    background-color: #0a0f1a;
+}
+QWidget {
+    color: #c8d4e6;
+    font-size: 13px;
+    background-color: transparent;
+}
+QToolTip {
+    background-color: #121a2b;
+    color: #e2e8f0;
+    border: 1px solid #1e3a5f;
+    padding: 6px 10px;
+    border-radius: 6px;
+}
+
+/* ========== Top chrome ========== */
+#BuildInfoBar {
+    background-color: #0d1526;
+    border-bottom: 1px solid #1a3a5c;
+}
+#BuildInfoBar QLabel {
+    border: none;
+    background: transparent;
+}
+#VersionLabel, #SdkWheelLabel {
+    font-size: 11px;
+    color: #64748b;
+    font-family: Consolas, "DejaVu Sans Mono", monospace;
+}
+#TitleLabel {
+    font-size: 15px;
+    font-weight: 700;
+    color: #e2e8f0;
+    letter-spacing: 1px;
+}
+
+/* ========== Device panel ========== */
+#DevicePanel {
+    background-color: #0d1526;
+    border-bottom: 1px solid #1a3a5c;
+}
+#DevicePanel QLabel {
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+/* ========== Buttons ========== */
+QPushButton {
+    background-color: #152238;
+    color: #e2e8f0;
+    border: 1px solid #243656;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-weight: 600;
+    min-height: 22px;
+}
+QPushButton:hover {
+    background-color: #1c2f4a;
+    border-color: #22d3ee;
+    color: #ffffff;
+}
+QPushButton:pressed {
+    background-color: #0f1a2e;
+}
+QPushButton:disabled {
+    color: #475569;
+    background-color: #0f1724;
+    border-color: #1a2538;
+}
+
+QPushButton#PrimaryBtn {
+    background-color: #0e7490;
+    border-color: #22d3ee;
+    color: #ecfeff;
+}
+QPushButton#PrimaryBtn:hover {
+    background-color: #0891b2;
+    border-color: #67e8f9;
+}
+QPushButton#PrimaryBtn:disabled {
+    background-color: #164e63;
+    border-color: #155e75;
+    color: #5eead4;
+}
+
+QPushButton#DangerBtn {
+    background-color: #7f1d1d;
+    border-color: #f87171;
+    color: #fee2e2;
+}
+QPushButton#DangerBtn:hover {
+    background-color: #991b1b;
+    border-color: #fca5a5;
+}
+QPushButton#DangerBtn:disabled {
+    background-color: #450a0a;
+    border-color: #7f1d1d;
+    color: #9f1239;
+}
+
+QPushButton#GhostBtn {
+    background-color: transparent;
+    border-color: #334155;
+    color: #94a3b8;
+}
+QPushButton#GhostBtn:hover {
+    border-color: #22d3ee;
+    color: #e2e8f0;
+    background-color: #121a2b;
+}
+
+/* ========== Inputs ========== */
+QComboBox, QSpinBox, QLineEdit {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #243656;
+    border-radius: 6px;
+    padding: 5px 10px;
+    min-height: 22px;
+    selection-background-color: #0e7490;
+    selection-color: #ffffff;
+}
+QComboBox:hover, QSpinBox:hover, QLineEdit:hover {
+    border-color: #22d3ee;
+}
+QComboBox:disabled, QSpinBox:disabled, QLineEdit:disabled {
+    color: #475569;
+    background-color: #0b1220;
+    border-color: #1a2538;
+}
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+}
+QComboBox::down-arrow {
+    /* path rewritten at runtime by load_stylesheet() */
+    image: url(app/icons/combo_down_arrow.png);
+    width: 10px;
+    height: 6px;
+}
+QComboBox QAbstractItemView {
+    background-color: #0f172a;
+    color: #e2e8f0;
+    border: 1px solid #1e3a5f;
+    selection-background-color: #0e7490;
+    selection-color: #ffffff;
+    outline: none;
+    padding: 4px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    border-radius: 4px;
+}
+QComboBox QAbstractItemView::item:hover {
+    background-color: #17263d;
+}
+QComboBox QAbstractItemView::item:selected {
+    background-color: #0e7490;
+    color: #ffffff;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    background-color: #152238;
+    border: none;
+    width: 16px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+    background-color: #1c2f4a;
+}
+
+/* ========== Cards / groups ========== */
+QGroupBox {
+    background-color: #0f172a;
+    border: 1px solid #1e3a5f;
+    border-radius: 10px;
+    margin-top: 14px;
+    font-weight: 700;
+    padding-top: 8px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    color: #22d3ee;
+}
+
+QFrame#SensorRow {
+    background-color: #0f172a;
+    border: 1px solid #1a3a5c;
+    border-radius: 10px;
+}
+QFrame#SensorRow:hover {
+    border-color: #22d3ee;
+}
+
+#SensorNameLabel {
+    font-weight: 700;
+    color: #67e8f9;
+    font-size: 12px;
+    font-family: Consolas, "DejaVu Sans Mono", monospace;
+}
+#TileCaption {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+/* ========== Scroll ========== */
+QStackedWidget {
+    background-color: #0a0f1a;
+    border: none;
+}
+QScrollArea {
+    border: none;
+    background-color: #0a0f1a;
+}
+QScrollBar:vertical {
+    background: #0a0f1a;
+    width: 10px;
+    margin: 2px 2px 2px 0;
+    border: none;
+}
+QScrollBar::handle:vertical {
+    background: #243656;
+    border-radius: 5px;
+    min-height: 28px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #22d3ee;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
+QScrollBar:horizontal {
+    background: #0a0f1a;
+    height: 10px;
+}
+QScrollBar::handle:horizontal {
+    background: #243656;
+    border-radius: 5px;
+    min-width: 28px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: #22d3ee;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0;
+}
+
+/* ========== Status / dialogs ========== */
+QStatusBar {
+    background-color: #0d1526;
+    color: #64748b;
+    border-top: 1px solid #1a3a5c;
+    font-family: Consolas, "DejaVu Sans Mono", monospace;
+    font-size: 11px;
+}
+QStatusBar QLabel {
+    color: #94a3b8;
+    padding: 0 8px;
+}
+QMessageBox {
+    background-color: #0f172a;
+}
+QMessageBox QLabel {
+    color: #e2e8f0;
+}
+QMessageBox QPushButton {
+    min-width: 72px;
+}

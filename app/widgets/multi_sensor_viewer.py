@@ -12,6 +12,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from app.widgets.image_viewer import ImageLabel
+from app.widgets.depth_3d_view import Depth3DWidget
+from app.widgets.point_cloud_view import PointCloudWidget
 from app.widgets.data_panel import ForcePlots
 from pyvitaisdk import VTSDataType
 
@@ -28,12 +30,12 @@ class SensorRowWidget(QFrame):
     def _setup_ui(self):
         # 整体行：右上角放小号滑动状态，下面为名称 + 图像 + 波形
         v = QVBoxLayout(self)
-        v.setContentsMargins(6, 2, 6, 4)
-        v.setSpacing(2)
+        v.setContentsMargins(10, 6, 10, 8)
+        v.setSpacing(4)
 
         self.slip_label = QLabel("● --")
         self.slip_label.setFont(QFont("", 9, QFont.Weight.Bold))
-        self.slip_label.setStyleSheet("color: #2ecc71;")
+        self.slip_label.setStyleSheet("color: #34d399;")
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(0)
@@ -43,27 +45,27 @@ class SensorRowWidget(QFrame):
 
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
-        h.setSpacing(6)
+        h.setSpacing(8)
 
         # 传感器名称（行首）
         name = QLabel(self.sn)
+        name.setObjectName("SensorNameLabel")
         name.setFixedWidth(96)
         name.setWordWrap(True)
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        name.setStyleSheet("font-weight: bold; color: #333; font-size: 12px;")
         h.addWidget(name)
 
         # 原图
-        self.raw_view = ImageLabel()
-        raw_tile = self._tile("原图", self.raw_view)
+        self.depth_view_2D = ImageLabel()
+        raw_tile = self._tile("深度图 2D", self.depth_view_2D)
 
-        # 深度图
-        self.depth_view = ImageLabel()
-        depth_tile = self._tile("深度图", self.depth_view)
+        # 深度图（3D 高程曲面）
+        self.depth_view = Depth3DWidget()
+        depth_tile = self._tile("深度图 3D", self.depth_view)
 
-        # 标记点
-        self.marker_view = ImageLabel()
-        marker_tile = self._tile("标记点", self.marker_view)
+        # 标记点云 + 位移箭头
+        self.marker_view = PointCloudWidget()
+        marker_tile = self._tile("点云位移", self.marker_view)
 
         # 折线图（三根独立，竖排一列）：去掉右下角滑动状态后占满整列，随行高伸缩
         self.force_plots = ForcePlots()
@@ -81,8 +83,9 @@ class SensorRowWidget(QFrame):
         w = QWidget()
         l = QVBoxLayout(w)
         l.setContentsMargins(0, 0, 0, 0)
-        l.setSpacing(2)
+        l.setSpacing(3)
         cap = QLabel(title)
+        cap.setObjectName("TileCaption")
         cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
         l.addWidget(cap)
         if overlay is not None:
@@ -101,16 +104,24 @@ class SensorRowWidget(QFrame):
         return w
 
     def set_loading(self, loading):
-        for view in (self.raw_view, self.depth_view, self.marker_view):
+        for view in (self.depth_view_2D, self.depth_view, self.marker_view):
             view.set_loading(loading)
 
     def update_data(self, data):
+        # print("UPDATE_DATA", data)
         if VTSDataType.WARPED_IMG in data:
-            self.raw_view.set_image(data[VTSDataType.WARPED_IMG])
+            self.depth_view_2D.set_image(data[VTSDataType.DEPTH_MAP])
         if VTSDataType.DEPTH_MAP in data:
-            self.depth_view.set_image(data[VTSDataType.DEPTH_MAP], is_depth=True)
-        if VTSDataType.MARKER_IMG in data:
-            self.marker_view.set_image(data[VTSDataType.MARKER_IMG])
+            self.depth_view.set_depth(data[VTSDataType.DEPTH_MAP])
+        if (
+            VTSDataType.MARKER_ORIGIN_VECTOR in data
+            and VTSDataType.MARKER_CURRENT_VECTOR in data
+        ):
+            # print("XYZ_VECTOR", data[VTSDataType.XYZ_VECTOR])
+            self.marker_view.set_points(
+                data[VTSDataType.MARKER_ORIGIN_VECTOR],
+                data[VTSDataType.XYZ_VECTOR],
+            )
         if VTSDataType.FORCE6D_VECTOR in data:
             f = data[VTSDataType.FORCE6D_VECTOR]
             if f is not None and len(f) >= 6:
@@ -122,11 +133,19 @@ class SensorRowWidget(QFrame):
         if state is None:
             return
         name = state.name if hasattr(state, "name") else str(state)
-        if "SLIP" in name.upper():
-            self.slip_label.setStyleSheet("color: #e74c3c;")
+        upper = name.upper()
+        if "SLIP" in upper:
+            self.slip_label.setStyleSheet("color: #f87171;")
+        elif "UNSTABLE" in upper:
+            self.slip_label.setStyleSheet("color: #fbbf24;")
         else:
-            self.slip_label.setStyleSheet("color: #2ecc71;")
+            self.slip_label.setStyleSheet("color: #34d399;")
         self.slip_label.setText(f"● {name}")
+
+    def release_resources(self):
+        depth_view = getattr(self, "depth_view", None)
+        if depth_view is not None and hasattr(depth_view, "release_resources"):
+            depth_view.release_resources()
 
 
 def _chunk(seq, n):
@@ -141,6 +160,10 @@ class MultiSensorViewer(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("MultiSensorViewer")
+        self.setStyleSheet(
+            "#MultiSensorViewer { background-color: #0a0f1a; }"
+        )
         self._rows = {}   # sn -> SensorRowWidget
         self._sns = []    # 当前传感器序列号（有序，用于分页）
 
@@ -186,7 +209,9 @@ class MultiSensorViewer(QWidget):
         self._rebuild()
 
     def _rebuild(self):
-        # 清空旧页面与行
+        # 清空旧页面与行（先释放 3D 控件独占的 GL 资源）
+        for row in self._rows.values():
+            row.release_resources()
         while self._stack.count() > 0:
             w = self._stack.widget(0)
             self._stack.removeWidget(w)
@@ -197,8 +222,8 @@ class MultiSensorViewer(QWidget):
         for page_sns in _chunk(self._sns, self.PAGE_SIZE):
             page = QWidget()
             pl = QVBoxLayout(page)
-            pl.setContentsMargins(8, 8, 8, 8)
-            pl.setSpacing(8)
+            pl.setContentsMargins(12, 12, 12, 12)
+            pl.setSpacing(10)
             for sn in page_sns:
                 row = SensorRowWidget(sn)
                 self._rows[sn] = row
@@ -224,6 +249,9 @@ class MultiSensorViewer(QWidget):
     def reset(self):
         self._sns = []
         self._rebuild()
+
+    def sensor_sns(self):
+        return list(self._sns)
 
     def count(self):
         return len(self._rows)

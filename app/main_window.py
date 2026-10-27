@@ -10,8 +10,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from app.build_info import APP_VERSION, GIT_BRANCH, SDK_WHEEL
-from app.widgets.device_panel import DevicePanel
-from app.widgets.multi_sensor_viewer import MultiSensorViewer
 from app.sensor_worker import SensorWorker
 from pyvitaisdk import VTSDataType
 
@@ -36,6 +34,10 @@ class MainWindow(QMainWindow):
         self._connect_signals()
 
     def _setup_ui(self):
+        # 局部导入，便于 UI 热更新后拿到 reload 过的类
+        from app.widgets.device_panel import DevicePanel
+        from app.widgets.multi_sensor_viewer import MultiSensorViewer
+
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -53,10 +55,11 @@ class MainWindow(QMainWindow):
         # 三列等宽，确保中间标题相对于整个窗口真正居中。
         # =========================================================
         self.build_info_bar = QWidget()
-        self.build_info_bar.setFixedHeight(36)
+        self.build_info_bar.setObjectName("BuildInfoBar")
+        self.build_info_bar.setFixedHeight(40)
 
         build_info_layout = QGridLayout(self.build_info_bar)
-        build_info_layout.setContentsMargins(12, 0, 12, 0)
+        build_info_layout.setContentsMargins(16, 0, 16, 0)
         build_info_layout.setHorizontalSpacing(8)
         build_info_layout.setVerticalSpacing(0)
 
@@ -64,6 +67,7 @@ class MainWindow(QMainWindow):
         self.version_label = QLabel(
             f"Version: {APP_VERSION}"
         )
+        self.version_label.setObjectName("VersionLabel")
         self.version_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft
             | Qt.AlignmentFlag.AlignVCenter
@@ -79,6 +83,7 @@ class MainWindow(QMainWindow):
         self.title_label = QLabel(
             "ViTai 视触觉传感器查看器"
         )
+        self.title_label.setObjectName("TitleLabel")
         self.title_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter
         )
@@ -87,6 +92,7 @@ class MainWindow(QMainWindow):
         self.sdk_wheel_label = QLabel(
             SDK_WHEEL
         )
+        self.sdk_wheel_label.setObjectName("SdkWheelLabel")
         self.sdk_wheel_label.setAlignment(
             Qt.AlignmentFlag.AlignRight
             | Qt.AlignmentFlag.AlignVCenter
@@ -122,58 +128,6 @@ class MainWindow(QMainWindow):
         build_info_layout.setColumnStretch(1, 1)
         build_info_layout.setColumnStretch(2, 1)
 
-        # 构建信息栏整体样式
-        self.build_info_bar.setStyleSheet(
-            """
-            QWidget {
-                background-color: #f5f5f5;
-                border-bottom: 1px solid #cccccc;
-            }
-
-            QLabel {
-                border: none;
-                background: transparent;
-            }
-            """
-        )
-
-        # 左侧版本号样式
-        self.version_label.setStyleSheet(
-            """
-            QLabel {
-                font-size: 12px;
-                color: #666666;
-                border: none;
-                background: transparent;
-            }
-            """
-        )
-
-        # 中间标题样式
-        self.title_label.setStyleSheet(
-            """
-            QLabel {
-                font-size: 15px;
-                font-weight: bold;
-                color: #222222;
-                border: none;
-                background: transparent;
-            }
-            """
-        )
-
-        # 右侧 SDK wheel 样式
-        self.sdk_wheel_label.setStyleSheet(
-            """
-            QLabel {
-                font-size: 12px;
-                color: #666666;
-                border: none;
-                background: transparent;
-            }
-            """
-        )
-
         main_layout.addWidget(
             self.build_info_bar
         )
@@ -184,15 +138,6 @@ class MainWindow(QMainWindow):
         self.device_panel = DevicePanel()
         main_layout.addWidget(
             self.device_panel
-        )
-
-        sep_top = QWidget()
-        sep_top.setFixedHeight(1)
-        sep_top.setStyleSheet(
-            "background-color: #cccccc;"
-        )
-        main_layout.addWidget(
-            sep_top
         )
 
         # =========================================================
@@ -244,6 +189,64 @@ class MainWindow(QMainWindow):
         self.device_panel.calibrate_request.connect(
             self._on_calibrate
         )
+
+    def _disconnect_panel_signals(self):
+        panel = getattr(self, "device_panel", None)
+        if panel is None:
+            return
+        for signal in (
+            panel.connect_request,
+            panel.disconnect_request,
+            panel.start_request,
+            panel.stop_request,
+            panel.calibrate_request,
+        ):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+
+    def reload_ui(self):
+        """就地重建 UI，保留传感器 worker 连接。"""
+        from app.ui_hot_reload import reload_widget_modules
+
+        panel_state = None
+        viewer_sns = []
+        status_text = "就绪"
+        fps_text = "帧率: --"
+        ts_text = "时间戳: --"
+
+        if hasattr(self, "device_panel"):
+            panel_state = self.device_panel.export_ui_state()
+            self.device_panel.prepare_destroy()
+            self._disconnect_panel_signals()
+
+        if hasattr(self, "multi_viewer"):
+            viewer_sns = self.multi_viewer.sensor_sns()
+
+        if hasattr(self, "status_label"):
+            status_text = self.status_label.text()
+            fps_text = self.fps_label.text()
+            ts_text = self.ts_label.text()
+
+        reload_widget_modules()
+        self._setup_ui()
+        self._connect_signals()
+
+        if panel_state is not None:
+            self.device_panel.apply_ui_state(panel_state)
+
+        if viewer_sns:
+            self.multi_viewer.set_sensors(viewer_sns)
+            if self._workers:
+                self.multi_viewer.set_loading(viewer_sns, False)
+
+        self.status_label.setText(status_text)
+        self.fps_label.setText(fps_text)
+        self.ts_label.setText(ts_text)
+
+        self.status_bar.showMessage("UI 已热更新", 2000)
+        print("[reload] UI 已就地刷新（传感器连接保留）")
 
     def _sns(self):
         return [

@@ -1,6 +1,6 @@
 import sys
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QGridLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 import pyqtgraph as pg
@@ -10,6 +10,18 @@ from pyvitaisdk import VTSDataType
 
 
 _MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+
+# 曲线配色：霓虹感但不过度刺眼
+_FX_COLOR = "#f87171"
+_FY_COLOR = "#34d399"
+_FZ_COLOR = "#38bdf8"
+_FX_REF = "#7f1d1d"
+_FY_REF = "#065f46"
+_FZ_REF = "#0c4a6e"
+_PLOT_BG = "#070b14"
+_AXIS_COLOR = "#475569"
+_TICK_COLOR = "#334155"
+_LABEL_MUTED = "#64748b"
 
 
 class ForcePlots(QWidget):
@@ -26,20 +38,20 @@ class ForcePlots(QWidget):
         pg.setConfigOptions(antialias=True)
 
         self.fx_plot = self._new_plot()
-        self.fx_curve = self.fx_plot.plot(pen=pg.mkPen("#e74c3c", width=2))
+        self.fx_curve = self.fx_plot.plot(pen=pg.mkPen(_FX_COLOR, width=2))
         self.fx_axis = self.fx_plot.getPlotItem().getAxis("left")
-        self.fx_refs = self._new_ref_lines(self.fx_plot, "#f5b7b1")
-        self.fx_value = self._new_value_label("#e74c3c")
+        self.fx_refs = self._new_ref_lines(self.fx_plot, _FX_REF)
+        self.fx_value = self._new_value_label(_FX_COLOR)
         self.fy_plot = self._new_plot()
-        self.fy_curve = self.fy_plot.plot(pen=pg.mkPen("#2ecc71", width=2))
+        self.fy_curve = self.fy_plot.plot(pen=pg.mkPen(_FY_COLOR, width=2))
         self.fy_axis = self.fy_plot.getPlotItem().getAxis("left")
-        self.fy_refs = self._new_ref_lines(self.fy_plot, "#a9e6c3")
-        self.fy_value = self._new_value_label("#2ecc71")
+        self.fy_refs = self._new_ref_lines(self.fy_plot, _FY_REF)
+        self.fy_value = self._new_value_label(_FY_COLOR)
         self.fz_plot = self._new_plot()
-        self.fz_curve = self.fz_plot.plot(pen=pg.mkPen("#3498db", width=2))
+        self.fz_curve = self.fz_plot.plot(pen=pg.mkPen(_FZ_COLOR, width=2))
         self.fz_axis = self.fz_plot.getPlotItem().getAxis("left")
-        self.fz_refs = self._new_ref_lines(self.fz_plot, "#a9d3f0")
-        self.fz_value = self._new_value_label("#3498db")
+        self.fz_refs = self._new_ref_lines(self.fz_plot, _FZ_REF)
+        self.fz_value = self._new_value_label(_FZ_COLOR)
 
         layout.addWidget(self._labeled_row("Fx", self.fx_plot, self.fx_value), 1)
         layout.addWidget(self._labeled_row("Fy", self.fy_plot, self.fy_value), 1)
@@ -47,7 +59,7 @@ class ForcePlots(QWidget):
 
     def _new_plot(self):
         p = pg.PlotWidget()
-        p.setBackground("#ffffff")
+        p.setBackground(_PLOT_BG)
         p.showGrid(x=False, y=False)   # 关闭默认网格，参考线改由 _new_ref_lines 显式绘制
         pi = p.getPlotItem()
         pi.hideButtons()
@@ -59,16 +71,19 @@ class ForcePlots(QWidget):
         y_axis = pi.getAxis("left")
         y_axis.setStyle(tickFont=QFont(_MONO_FONT, 7))
         y_axis.setWidth(38)
-        y_axis.setPen(pg.mkPen("#999999"))        # 轴线灰色
-        y_axis.setTextPen(pg.mkPen("#999999"))    # 刻度文字灰色
-        y_axis.setTickPen(pg.mkPen("#cccccc"))    # 刻度短线浅灰（非参考线）
+        y_axis.setPen(pg.mkPen(_AXIS_COLOR))
+        y_axis.setTextPen(pg.mkPen(_AXIS_COLOR))
+        y_axis.setTickPen(pg.mkPen(_TICK_COLOR))
         return p
 
     def _new_ref_lines(self, plot, light_color):
         """三条数值参考线（-峰值 / 0 / +峰值），用各轴颜色的浅色版本，位置随峰值更新。"""
         refs = []
         for _ in range(3):
-            ln = pg.InfiniteLine(angle=0, pen=pg.mkPen(light_color, width=1))
+            ln = pg.InfiniteLine(
+                angle=0,
+                pen=pg.mkPen(light_color, width=1, style=Qt.PenStyle.DotLine),
+            )
             plot.addItem(ln)
             refs.append(ln)
         return refs
@@ -85,11 +100,14 @@ class ForcePlots(QWidget):
         w = QWidget()
         l = QHBoxLayout(w)
         l.setContentsMargins(0, 0, 0, 0)
-        l.setSpacing(2)
+        l.setSpacing(4)
         lab = QLabel(name)
-        lab.setFixedWidth(18)
+        lab.setFixedWidth(20)
         lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lab.setStyleSheet("font-weight: bold; font-size: 10px; color: #666;")
+        lab.setStyleSheet(
+            f"font-weight: 700; font-size: 10px; color: {_LABEL_MUTED};"
+            f"font-family: {_MONO_FONT};"
+        )
         l.addWidget(lab)
         l.addWidget(plot, 1)
         l.addWidget(value_label)
@@ -98,6 +116,7 @@ class ForcePlots(QWidget):
     def update_data(self, force6d):
         if force6d is None:
             return
+        # print("FORCE6D_VECTOR", force6d)
         self._buffer.append(force6d)
         if len(self._buffer) == 0:
             return
@@ -168,7 +187,12 @@ class DataPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        layout.addWidget(QLabel("力", font=QFont("", 10, QFont.Weight.Bold)))
+        title = QLabel("力")
+        title.setObjectName("TileCaption")
+        title.setStyleSheet(
+            "color: #22d3ee; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+        )
+        layout.addWidget(title)
         self.force_plots = ForcePlots()
         layout.addWidget(self.force_plots)
 
@@ -176,9 +200,9 @@ class DataPanel(QWidget):
         sg_layout = QHBoxLayout(slip_group)
         self.slip_indicator = QLabel("●")
         self.slip_indicator.setFont(QFont("", 18))
-        self.slip_indicator.setStyleSheet("color: #2ecc71")
+        self.slip_indicator.setStyleSheet("color: #34d399")
         self.slip_label = QLabel("--")
-        self.slip_label.setFont(QFont("", 14, QFont.Weight.Bold))
+        self.slip_label.setFont(QFont(_MONO_FONT, 14, QFont.Weight.Bold))
         sg_layout.addWidget(self.slip_indicator)
         sg_layout.addWidget(self.slip_label)
         sg_layout.addStretch()
@@ -187,27 +211,31 @@ class DataPanel(QWidget):
         layout.addStretch()
 
     def update_data(self, data: dict):
+    
         if VTSDataType.FORCE6D_VECTOR in data:
             f = data[VTSDataType.FORCE6D_VECTOR]
+     
             if f is not None and len(f) >= 6:
                 self.force_plots.update_data(f)
 
         if VTSDataType.SLIP_STATE in data:
             state = data[VTSDataType.SLIP_STATE]
+          
             if state is not None:
                 state_name = str(state.name)
                 self.slip_label.setText(state_name)
                 if "SLIP" in state_name.upper():
-                    self.slip_indicator.setStyleSheet("color: #e74c3c")
-                    self.slip_label.setStyleSheet("color: #e74c3c")
+                    self.slip_indicator.setStyleSheet("color: #f87171")
+                    self.slip_label.setStyleSheet("color: #f87171")
                 elif "UNSTABLE" in state_name.upper():
-                    self.slip_indicator.setStyleSheet("color: #f39c12")
-                    self.slip_label.setStyleSheet("color: #f39c12")
+                    self.slip_indicator.setStyleSheet("color: #fbbf24")
+                    self.slip_label.setStyleSheet("color: #fbbf24")
                 else:
-                    self.slip_indicator.setStyleSheet("color: #2ecc71")
-                    self.slip_label.setStyleSheet("")
+                    self.slip_indicator.setStyleSheet("color: #34d399")
+                    self.slip_label.setStyleSheet("color: #e2e8f0")
 
     def reset(self):
         self.slip_label.setText("--")
-        self.slip_indicator.setStyleSheet("color: #2ecc71")
+        self.slip_indicator.setStyleSheet("color: #34d399")
+        self.slip_label.setStyleSheet("")
         self.force_plots.reset()

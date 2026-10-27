@@ -25,3 +25,4 @@ app/widgets/weight/
 
 # Packaging metadata
 *.egg-info/
+.history/

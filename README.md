@@ -33,7 +33,14 @@ pip install -r requirements.txt
 
 # 3. 运行
 python main.py
+
+# 开发模式（热更新）
+python dev.py
 ```
+
+开发模式下：
+- 改 `app/widgets/**` 或 `app/styles.qss` → **UI 就地热更新**（不断开传感器）
+- 改其它源码（如 `sensor_worker.py`、`main_window.py`）→ 整进程自动重启
 
 ### 打包
 
@@ -69,11 +76,14 @@ BC_20260529_mini/
 ```
 sensor-desktop-app/
 ├── main.py                 # 程序入口
+├── dev.py                  # 开发模式（UI 热更新 / 非 UI 自动重启）
 ├── build.py                # 一键打包脚本（安装 SDK + 依赖 + PyInstaller 打包）
 ├── requirements.txt        # Python 依赖
 ├── ViTaiViewer.spec        # PyInstaller 打包配置
 ├── app/
-    ├── build_info.py       # 自动生成构建信息
+│   ├── styles.qss          # 全局样式（支持热更新）
+│   ├── ui_hot_reload.py    # UI 就地热更新辅助
+│   ├── build_info.py       # 自动生成构建信息
 │   ├── main_window.py      # 主窗口（UI 布局 + 信号连接 + 生命周期）
 │   ├── sensor_worker.py    # 传感器采集工作线程
 │   └── widgets/

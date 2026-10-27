@@ -2,13 +2,26 @@ import sys
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
+from PyQt6.QtGui import QImage, QPixmap, QFont
 import cv2
 import numpy as np
 from pyvitaisdk import VTSDataType
 
 
 _MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
+
+_IMG_IDLE_STYLE = (
+    "background-color: #070b14;"
+    "border: 1px solid #1a3a5c;"
+    "border-radius: 8px;"
+    "color: #475569;"
+)
+_IMG_LOADING_STYLE = (
+    "background-color: #0a1220;"
+    "border: 1px solid #22d3ee;"
+    "border-radius: 8px;"
+    "color: #67e8f9;"
+)
 
 
 class ImageLabel(QLabel):
@@ -19,8 +32,8 @@ class ImageLabel(QLabel):
         self._pixmap = None
         self._source_array = None
         self._loading = False
-        self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
-        self.setText("无信号")
+        self.setStyleSheet(_IMG_IDLE_STYLE)
+        self.setText("NO SIGNAL")
 
     def sizeHint(self):
         # 固定返回稳定尺寸，避免 setPixmap 改变 sizeHint 导致首帧到达时行高突变。
@@ -38,12 +51,12 @@ class ImageLabel(QLabel):
         if loading:
             self.setPixmap(QPixmap())
             self.setText("加载中...")
-            self.setFont(QFont("", 20, QFont.Weight.Bold))
-            self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
+            self.setFont(QFont(_MONO_FONT, 14, QFont.Weight.Bold))
+            self.setStyleSheet(_IMG_LOADING_STYLE)
         else:
             self.setText("无信号")
-            self.setFont(QFont())
-            self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
+            self.setFont(QFont(_MONO_FONT, 10))
+            self.setStyleSheet(_IMG_IDLE_STYLE)
 
     def set_image(self, img_array, is_depth=False):
         if img_array is None:
@@ -107,7 +120,7 @@ class ForceValueWidget(QWidget):
         fx_row.setSpacing(8)
         self.fx_val = QLabel("0.000")
         self.fx_val.setFont(val_font)
-        self.fx_val.setStyleSheet("color: #e74c3c")
+        self.fx_val.setStyleSheet("color: #f87171")
         fx_row.addStretch()
         fx_row.addWidget(QLabel("Fx", font=lbl_font))
         fx_row.addWidget(self.fx_val)
@@ -120,7 +133,7 @@ class ForceValueWidget(QWidget):
         fy_row.setSpacing(8)
         self.fy_val = QLabel("0.000")
         self.fy_val.setFont(val_font)
-        self.fy_val.setStyleSheet("color: #2ecc71")
+        self.fy_val.setStyleSheet("color: #34d399")
         fy_row.addStretch()
         fy_row.addWidget(QLabel("Fy", font=lbl_font))
         fy_row.addWidget(self.fy_val)
@@ -133,7 +146,7 @@ class ForceValueWidget(QWidget):
         fz_row.setSpacing(8)
         self.fz_val = QLabel("0.000")
         self.fz_val.setFont(val_font)
-        self.fz_val.setStyleSheet("color: #3498db")
+        self.fz_val.setStyleSheet("color: #38bdf8")
         fz_row.addStretch()
         fz_row.addWidget(QLabel("Fz", font=lbl_font))
         fz_row.addWidget(self.fz_val)
@@ -168,12 +181,15 @@ class ImageViewer(QWidget):
         self.marker_view = ImageLabel()
         self.force_values = ForceValueWidget()
 
-        grid.addWidget(QLabel("原始图"), 0, 0, Qt.AlignmentFlag.AlignCenter)
+        for text, r, c in (("原始图", 0, 0), ("深度图", 2, 0), ("标记点", 2, 1)):
+            cap = QLabel(text)
+            cap.setObjectName("TileCaption")
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(cap, r, c, Qt.AlignmentFlag.AlignCenter)
+
         grid.addWidget(QLabel(""), 0, 1)
         grid.addWidget(self.warped_view, 1, 0)
         grid.addWidget(self.force_values, 1, 1)
-        grid.addWidget(QLabel("深度图"), 2, 0, Qt.AlignmentFlag.AlignCenter)
-        grid.addWidget(QLabel("标记点"), 2, 1, Qt.AlignmentFlag.AlignCenter)
         grid.addWidget(self.depth_view, 3, 0)
         grid.addWidget(self.marker_view, 3, 1)
 

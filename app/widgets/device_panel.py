@@ -60,7 +60,7 @@ class DevicePanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("DevicePanel")
-        self.setFixedHeight(80)
+        self.setFixedHeight(64)
         self._connected = False
         self._streaming = False
         self._had_devices = False
@@ -77,56 +77,63 @@ class DevicePanel(QWidget):
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(8)
 
         sn_layout = QHBoxLayout()
-        sn_layout.addWidget(QLabel("传感器:"))
+        sn_layout.setSpacing(6)
+        sn_layout.addWidget(QLabel("传感器"))
         self.sn_check_combo = CheckableComboBox()
-        self.sn_check_combo.setMinimumWidth(220)
+        self.sn_check_combo.setMinimumWidth(240)
         self.sn_check_combo.checked_changed.connect(self._update_buttons)
         sn_layout.addWidget(self.sn_check_combo)
         layout.addLayout(sn_layout)
 
         self.refresh_btn = QPushButton("刷新")
+        self.refresh_btn.setObjectName("GhostBtn")
         self.refresh_btn.clicked.connect(self._start_scan)
         layout.addWidget(self.refresh_btn)
 
         self.connect_btn = QPushButton("连接")
+        self.connect_btn.setObjectName("PrimaryBtn")
         self.connect_btn.clicked.connect(self._on_connect)
         layout.addWidget(self.connect_btn)
 
         self.disconnect_btn = QPushButton("断开")
+        self.disconnect_btn.setObjectName("DangerBtn")
         self.disconnect_btn.setEnabled(False)
         self.disconnect_btn.clicked.connect(self._on_disconnect)
         layout.addWidget(self.disconnect_btn)
 
-        self.model_label = QLabel("型号: --")
+        self.model_label = QLabel("型号 · --")
         layout.addWidget(self.model_label)
 
-        layout.addSpacing(16)
+        layout.addSpacing(12)
 
-        layout.addWidget(QLabel("Marker数量:"))
+        layout.addWidget(QLabel("Marker"))
         self.marker_spin = QSpinBox()
         self.marker_spin.setRange(1, 99)
         self.marker_spin.setValue(12)
         self.marker_spin.setToolTip("设为21以启用六维力估计")
-        self.marker_spin.setFixedWidth(60)
+        self.marker_spin.setFixedWidth(64)
         layout.addWidget(self.marker_spin)
 
-        layout.addSpacing(16)
+        layout.addSpacing(12)
 
         self.calib_btn = QPushButton("校准")
+        self.calib_btn.setObjectName("GhostBtn")
         self.calib_btn.setEnabled(False)
         self.calib_btn.clicked.connect(self.calibrate_request.emit)
         layout.addWidget(self.calib_btn)
 
         self.start_btn = QPushButton("开始")
+        self.start_btn.setObjectName("PrimaryBtn")
         self.start_btn.setEnabled(False)
         self.start_btn.clicked.connect(self._on_start)
         layout.addWidget(self.start_btn)
 
         self.stop_btn = QPushButton("停止")
+        self.stop_btn.setObjectName("DangerBtn")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._on_stop)
         layout.addWidget(self.stop_btn)
@@ -134,12 +141,14 @@ class DevicePanel(QWidget):
         layout.addStretch()
 
         self.weight_btn = QPushButton("权重目录")
+        self.weight_btn.setObjectName("GhostBtn")
         self.weight_btn.setToolTip("选择自定义ONNX权重文件夹（按SN匹配）")
         self.weight_btn.clicked.connect(self._select_weight_dir)
         layout.addWidget(self.weight_btn)
 
         self.weight_label = QLabel("默认")
-        self.weight_label.setStyleSheet("color: #888;")
+        self.weight_label.setObjectName("WeightStatus")
+        self.weight_label.setStyleSheet("color: #64748b; font-size: 12px;")
         layout.addWidget(self.weight_label)
 
         layout.addStretch()
@@ -292,7 +301,9 @@ class DevicePanel(QWidget):
                     self._weight_dir = wd
                     name = os.path.basename(wd) or wd
                     self.weight_label.setText(name)
-                    self.weight_label.setStyleSheet("color: #2ecc71;")
+                    self.weight_label.setStyleSheet(
+                        "color: #34d399; font-size: 12px; font-weight: 600;"
+                    )
         except Exception:
             pass
 
@@ -357,7 +368,9 @@ class DevicePanel(QWidget):
             self._weight_dir = d
             name = os.path.basename(d) or d
             self.weight_label.setText(name)
-            self.weight_label.setStyleSheet("color: #2ecc71;")
+            self.weight_label.setStyleSheet(
+                "color: #34d399; font-size: 12px; font-weight: 600;"
+            )
             self._save_settings()
 
     def get_weight_dir(self):
@@ -368,3 +381,63 @@ class DevicePanel(QWidget):
 
     def get_marker_offsets(self):
         return [10, 10, 10, 10]
+
+    def export_ui_state(self):
+        """导出控件状态，供 UI 热更新后恢复。"""
+        return {
+            "connected": self._connected,
+            "streaming": self._streaming,
+            "had_devices": self._had_devices,
+            "weight_dir": self._weight_dir,
+            "marker_size": self.marker_spin.value(),
+            "checked_sns": list(self.sn_check_combo.checked_items()),
+            "all_sns": list(self.sn_check_combo.all_items()),
+            "last_sns": self._last_sns,
+            "model_text": self.model_label.text(),
+            "weight_text": self.weight_label.text(),
+            "weight_style": self.weight_label.styleSheet(),
+        }
+
+    def apply_ui_state(self, state):
+        """恢复 export_ui_state 导出的状态。"""
+        if not state:
+            return
+
+        self._connected = bool(state.get("connected"))
+        self._streaming = bool(state.get("streaming"))
+        self._had_devices = bool(state.get("had_devices"))
+        self._last_sns = state.get("last_sns")
+        self._weight_dir = state.get("weight_dir")
+
+        marker = state.get("marker_size")
+        if isinstance(marker, int):
+            self.marker_spin.setValue(marker)
+
+        self.model_label.setText(state.get("model_text") or "型号 · --")
+        self.weight_label.setText(state.get("weight_text") or "默认")
+        style = state.get("weight_style")
+        if style:
+            self.weight_label.setStyleSheet(style)
+
+        all_sns = state.get("all_sns") or []
+        checked = set(state.get("checked_sns") or [])
+        self.sn_check_combo.clear_items()
+        if all_sns:
+            self.sn_check_combo.add_select_all_item()
+            for sn in all_sns:
+                self.sn_check_combo.add_item(sn, checked=(sn in checked))
+        elif self._had_devices:
+            self.sn_check_combo.add_placeholder("未找到设备")
+
+        if self._connected:
+            self._refresh_timer.stop()
+        else:
+            self._refresh_timer.start(2000)
+
+        self._update_buttons()
+
+    def prepare_destroy(self):
+        """销毁前停止定时扫描，避免回调打到已删除控件。"""
+        self._refresh_timer.stop()
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            self._scan_worker.blockSignals(True)

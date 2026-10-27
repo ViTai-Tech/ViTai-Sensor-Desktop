@@ -33,7 +33,14 @@ pip install -r requirements.txt
 
 # 3. Run
 python main.py
+
+# Dev mode (hot reload)
+python dev.py
 ```
+
+In dev mode:
+- Changes under `app/widgets/**` or `app/styles.qss` → **in-place UI reload** (keeps sensor connections)
+- Other source changes → full process auto-restart
 
 ### Package
 
@@ -69,10 +76,13 @@ BC_20260529_mini/
 ```
 sensor-desktop-app/
 ├── main.py                 # Entry point
+├── dev.py                  # Dev mode (UI hot reload / process restart)
 ├── build.py                # Build script (SDK + deps + PyInstaller)
 ├── requirements.txt        # Python dependencies
 ├── ViTaiViewer.spec        # PyInstaller spec
 ├── app/
+│   ├── styles.qss          # Global stylesheet (hot-reloadable)
+│   ├── ui_hot_reload.py    # In-place UI reload helpers
 │   ├── main_window.py      # Main window (UI + signals + lifecycle)
 │   ├── sensor_worker.py    # Sensor data acquisition worker thread
 │   └── widgets/
