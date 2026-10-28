@@ -29,7 +29,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QSurfaceFormat,
 )
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 
 # --------------------------------------------------------------------- 颜色 / 几何
@@ -141,25 +141,20 @@ def _downsample(depth: np.ndarray, max_side: int) -> np.ndarray:
 
 def fit_camera_distance(size, half_height: float, fov_deg: float, aspect: float,
                         margin: float = 1.0) -> float:
-    """按曲面在 XZ 平面的实际足迹计算刚好能把深度面铺满视野的相机距离。
+    """按曲面在 XZ 平面的宽度计算相机距离，使深度面在**宽度方向**铺满视口。
 
-    原先使用“包围球”（把整段高度也计入半径）配合 ``min(vfov, hfov)`` 取景，
-    对平坦的深度曲面会过度放大半径，导致曲面只占画面中心、四周留黑边。
-    这里改用 XZ 平面半幅为主、仅取实际高度范围的一半参与包围，并用较大的那个
-    FOV 计算距离：让视口较长的那一侧正好被曲面铺满，较短的一侧允许轻微
-    超出（边缘裁掉），从而“撑满”整个控件而不留黑边。
+    之前用 XZ 对角线半径 + 较大的 FOV 取景，对非方形深度图 / 非方形视口
+    会在左右两侧留出黑边。这里改为以深度图的宽度（X 方向半幅）为基准、用
+    水平 FOV 计算距离：让曲面的左右边缘正好贴到视口左右边缘，实现“跟框
+    宽度自适应”。高度方向允许按比例缩放（匹配的深宽比下也不会留黑边）。
     """
-    hd, wd = size
-    # 深度曲面在 XZ 平面上的半幅（深度图近似方形）
-    r_xz = 0.5 * math.hypot(wd, hd)
-    # 以实际高度范围的一半参与包围，平坦曲面不会被额外推远
-    r_y = max(half_height, 1e-3)
-    radius = math.hypot(r_xz, r_y)
+    wd, hd = size  # size = (depth_width, depth_height)
     vfov = math.radians(fov_deg)
     hfov = 2.0 * math.atan(math.tan(vfov * 0.5) * max(aspect, 1e-6))
-    # 用较大的 FOV 取景：较长边铺满，较短边轻微超出被裁，消除黑边
-    fit_fov = max(vfov, hfov)
-    return radius / math.sin(fit_fov * 0.5) * margin
+    tan_half_hfov = math.tan(hfov * 0.5)
+    if tan_half_hfov <= 0:
+        tan_half_hfov = 1e-6
+    return (wd * 0.5) / tan_half_hfov * margin
 
 
 # --------------------------------------------------------------------- 相机 / 矩阵
@@ -374,12 +369,13 @@ void main() {
 
 _LIGHT_DIR = (0.35, 0.9, 0.35)
 
-# 默认视角：正俯视整张深度面（与 2D 深度图一致），两个倾斜角都为 0。
-_DEFAULT_TILT_X = 0.0
+# 默认视角：与 point_cloud_view 对齐，相机沿 X 轴抬起 25°（稍带俯视的立体感，
+# 而不是正俯视整张深度面），左右倾斜角仍为 0。
+_DEFAULT_TILT_X = math.radians(25.0)
 _DEFAULT_TILT_Z = 0.0
 
-# 相机取景留白系数：>1 时相机后退，曲面略微缩小，正好铺满外框而不被裁切。
-_FIT_MARGIN = 1.12
+# 相机取景留白系数：1.0 时曲面刚好铺满外框（宽度方向），不留黑边。
+_FIT_MARGIN = 1.0
 
 class DepthScene:
     """把深度网格数据上传到 GPU 并负责绘制（与 Qt 无关）。"""
@@ -584,6 +580,9 @@ class Depth3DWidget(QLabel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setMinimumSize(100, 70)
+        # 与 point_cloud_view 对齐：占满父布局可用空间，全屏 / 拉宽外层容器时
+        # 控件自身才会被撑大，绘制区才能跟着变宽。
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -776,8 +775,13 @@ class Depth3DWidget(QLabel):
             return
 
         dpr = self.devicePixelRatioF()
-        rw = max(8, int(w * dpr))
-        rh = max(8, int(h * dpr))
+        # 目标物理像素尺寸（显示用）：始终等于控件实际尺寸 × dpr，保证铺满外框。
+        # 全屏 / 拉宽外层容器时 tw/th 随之变大，绘制区即跟随宽度自适应。
+        tw = max(8, int(w * dpr))
+        th = max(8, int(h * dpr))
+        # 实际 FBO 渲染分辨率受 MAX_RENDER 限制（多传感器时控制 GPU 负载），
+        # 但保持与控件相同的宽高比；读回后再放大到目标尺寸，做到「渲染省、显示满」。
+        rw, rh = tw, th
         if max(rw, rh) > self.MAX_RENDER:
             scale = self.MAX_RENDER / float(max(rw, rh))
             rw = max(8, int(rw * scale))
@@ -822,9 +826,17 @@ class Depth3DWidget(QLabel):
 
         img = QImage(data, rw, rh, rw * 4, QImage.Format.Format_RGBA8888).copy()
         img = img.mirrored(False, True)  # OpenGL 原点在左下
+        # FBO 分辨率可能受 MAX_RENDER 限制而小于目标尺寸，放大到控件物理尺寸，
+        # 保证深度图绘制区域随外框宽度自适应铺满（宽高比一致，不会变形）。
+        if (img.width(), img.height()) != (tw, th):
+            img = img.scaled(
+                tw, th,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         pix = QPixmap.fromImage(img)
         if dpr > 0:
-            # 按物理像素渲染，再按设备像素比显示，避免高 DPI 下模糊
+            # 逻辑尺寸 = 物理尺寸 / dpr = 控件尺寸，正好铺满、且高 DPI 下清晰
             pix.setDevicePixelRatio(dpr)
         self._apply_idle_style()
         self.setPixmap(pix)
@@ -842,7 +854,7 @@ class Depth3DWidget(QLabel):
         img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
         pix = QPixmap.fromImage(img).scaled(
             self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self._apply_idle_style()

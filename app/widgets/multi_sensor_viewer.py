@@ -77,8 +77,9 @@ class SensorRowWidget(QFrame):
        
        
         h.addWidget(marker_tile, 3)
-        h.addWidget(raw_tile, 3)
         h.addWidget(depth_tile, 3)
+        h.addWidget(raw_tile, 3)
+       
         h.addWidget(self.force_plots, 4)
 
         v.addLayout(h, 1)
