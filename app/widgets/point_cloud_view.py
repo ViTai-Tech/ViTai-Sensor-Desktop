@@ -8,9 +8,11 @@
 - 点云画在「当前点」上，颜色由该点的位移长度决定；
 - 位移超过阈值的点不再画静止圆点，而是画一条「原始点 → 当前点」的 3D 箭头
   （与原 JS 的 PointCloudRenderer 逻辑一致：有箭头时隐藏当前粒子）；
-- 视图使用正交投影，缩放系数只按「默认朝向」的投影包围盒计算并固定下来，
-  因此无论数据是 20×20×3 还是 20×10×3 都能铺满外框，而旋转时相机距离不变
-  （纯旋转，粒子间隙与整体大小都不会被拉伸）。
+- 视图采用「正交旋转 + 透视除法」的相机模型：缩放系数只按「默认朝向」的投影
+  包围盒计算并固定下来，因此无论数据是 20×20×3 还是 20×10×3 都能铺满外框；
+  透视相机到点云中心的距离随点阵真实尺度固定，旋转时不改变整体取景。翻转时
+  近处的点更大、间距更开，远处的点更小、更收拢，整体呈梯形（近大远小），
+  而不是所有间隙一起等比缩小。
 
 相机：默认方位角 0°、仰角 25°（相机在点云平面正前方略微抬高），绕点云中心
 做完整的 3D 轨道旋转：左右拖拽 = 绕 y 轴（屏幕竖直轴）偏航，点云平面会像转盘
@@ -63,7 +65,14 @@ _MOVE_THRESHOLD_RATIO = 0.004
 # z 坐标放大系数：原始 z 数值通常很小，按真实值显示时高度几乎看不见。
 # 这里只在「显示投影」阶段把 z 放大该倍数（竖杆高度、屏幕偏移都更明显），
 # 不参与位移长度 / 颜色的计算，因此不会改变位移着色。
-_Z_SCALE = -200.0
+# 取正值：z 增大时点向上抬（深度轴朝上）；透视深度 w 也用真实 z，方向与显示一致。
+# 需要把深度轴反过来时，把它改成负值即可。
+_Z_SCALE = 200.0
+
+# 透视相机距离系数：相机沿视线方向到点云中心的距离 = 场景半径 × 该系数。
+# 系数越小透视越强（近大远小 / 翻转时的梯形越明显），越大越接近正交投影。
+# 取值需 > 1 才能保证所有点都落在相机前方（分母 cam_dist - w 恒为正）。
+_PERSPECTIVE_DISTANCE = 2.2
 
 
 def _lerp_color(t: float, alpha: int = 255) -> QColor:
@@ -230,27 +239,24 @@ class PointCloudWidget(QWidget):
         self.update()
 
     # ------------------------------------------------------------ 投影
-    def _project(self, pts: np.ndarray):
-        """正交投影：返回屏幕水平 u（向右）、屏幕竖直 v（向下）、深度 w（越大越近）。
+    @staticmethod
+    def _project_at(pts: np.ndarray, azimuth: float, elevation: float):
+        """按指定偏航 / 俯仰角做「正交旋转」：返回 u（右）、v（下）、w（深度，越大越近）。
 
         相机围绕点云中心做两段旋转（先绕 y 轴偏航、再绕 x 轴俯仰），因此左右 /
         上下拖拽都是真正的 3D 旋转：
 
         - 偏航 ``azimuth``：绕世界 y 轴（屏幕竖直轴）旋转，x 与 z 相互混合。
-          点云平面会像转盘一样侧过去（水平方向出现透视缩短），z 方向的位移也会
-          获得水平分量，所以箭头能看出「绕竖直轴转」的立体感；
+          点云平面会像转盘一样侧过去，z 方向的位移也会获得水平分量，所以箭头
+          能看出「绕竖直轴转」的立体感；
         - 俯仰 ``elevation``：绕世界 x 轴（屏幕水平轴）旋转，y 与 z 相互混合，
           表现为屏幕竖直方向的偏移：z 越大越靠上。
 
-        ``azimuth = 0``、``elevation = 0`` 时是正对 x-y 平面的正视（x 向右、
-        y 向下、z 指向观察者）；默认仰角给 25°，方形网格仍是方的，同时 z 差值
+        这里只做旋转，不做透视除法；近大远小由 ``_project_perspective`` 在旋转
+        结果上再做一次透视缩放实现。``azimuth = 0``、``elevation = 0`` 时是正对
+        x-y 平面的正视（x 向右、y 向下、z 指向观察者）；默认仰角给 25°，z 差值
         能在竖直方向显示出来。
         """
-        return self._project_at(pts, self._azimuth, self._elevation)
-
-    @staticmethod
-    def _project_at(pts: np.ndarray, azimuth: float, elevation: float):
-        """按指定偏航 / 俯仰角做正交投影（``_project`` 的通用版本）。"""
         ca, sa = math.cos(azimuth), math.sin(azimuth)
         ce, se = math.cos(elevation), math.sin(elevation)
 
@@ -270,12 +276,39 @@ class PointCloudWidget(QWidget):
         w = y * se + z1 * ce
         return u, v, w
 
+    @staticmethod
+    def _project_perspective(
+        disp_pts: np.ndarray,
+        depth_pts: np.ndarray,
+        azimuth: float,
+        elevation: float,
+        cam_dist: float,
+    ):
+        """正交旋转 + 透视除法，返回屏幕坐标 u/v、深度 w 与透视因子 f。
+
+        - 屏幕坐标 ``u``/``v`` 用 ``disp_pts``（z 已按 ``_Z_SCALE`` 放大）旋转得到，
+          决定点实际画在哪里、平面看起来多宽;
+        - 深度 ``w`` 用 ``depth_pts``（真实几何，z 未放大）旋转得到，只用于透视除法
+          与前后排序，避免 z 的显示放大把透视比例带偏;
+        - 透视因子 ``f = cam_dist / (cam_dist - w)``：w 越大（越靠近相机）f 越大，
+          该点被放大；越远 f 越小。用它乘 u/v 即得近大远小的梯形效果。
+
+        ``cam_dist`` 需大于所有点的 ``|w|``，由调用方按场景半径 × 系数保证，
+        这里再用下限兜底，避免除零 / 负深度。
+        """
+        u, v, _ = PointCloudWidget._project_at(disp_pts, azimuth, elevation)
+        _, _, w = PointCloudWidget._project_at(depth_pts, azimuth, elevation)
+        denom = np.maximum(cam_dist - w, cam_dist * 1e-3)
+        f = cam_dist / denom
+        return u * f, v * f, w, f
+
     def _fit_scale(self, rect: QRectF, u_all: np.ndarray, v_all: np.ndarray) -> float:
         """按给定投影包围盒算出「刚好铺满控件」的缩放系数。
 
         注意：这里只用**固定参考朝向**的包围盒来算，不能每帧用当前朝向算。
         否则旋转时投影宽度变小、缩放系数自动变大，整团点云会被越拉越大
-        （看起来像被拉长、粒子间隙被撑开），得不到纯旋转的效果。
+        （看起来像被拉长、整体取景跳动）。近大远小的透视形变由 ``w`` 的透视
+        除法负责，与这里的取景缩放相互独立。
         """
         u_min, u_max = float(u_all.min()), float(u_all.max())
         v_min, v_max = float(v_all.min()), float(v_all.max())
@@ -317,18 +350,46 @@ class PointCloudWidget(QWidget):
         # 纯 3D 旋转，位置稳定、不会随当前点的位移而漂移；即使某个当前点的 z 很大，
         # 静止时初始面也始终不动，当前点只是相对它发生位移，符合「绕原点旋转」的直觉。
         center = 0.5 * (org.min(axis=0) + org.max(axis=0))
-        local_o = org - center
-        local_c = cur - center
-        # 放大 z 的显示高度（仅影响投影，不影响下方位移 / 颜色计算）。
-        local_o[:, 2] *= _Z_SCALE
-        local_c[:, 2] *= _Z_SCALE
-        u_o, v_o, w_o = self._project(local_o)
-        u_c, v_c, w_c = self._project(local_c)
+        # 真实几何（未放大 z）：只用于推导透视深度 / 相机距离，让近大远小的比例
+        # 只取决于点阵本身的真实尺度，不被 z 的显示放大污染。
+        base_o = org - center
+        base_c = cur - center
+        # 显示坐标：把 z 放大，让竖杆和高度差在屏幕上看得见（只影响屏幕位置）。
+        disp_o = base_o.copy()
+        disp_c = base_c.copy()
+        disp_o[:, 2] *= _Z_SCALE
+        disp_c[:, 2] *= _Z_SCALE
 
-        # 缩放系数固定按「默认朝向」计算，与当前旋转角无关：相机距离不随旋转变化，
-        # 转的时候只是整个点云在转，点与点之间的间隙、整体大小都保持不变。
-        ru_o, rv_o, _ = self._project_at(local_o, 0.0, _DEFAULT_ELEVATION)
-        ru_c, rv_c, _ = self._project_at(local_c, 0.0, _DEFAULT_ELEVATION)
+        # 透视相机：相机到点云中心的距离 = 场景半径 × 固定系数。半径取自真实几何的
+        # 包围球，与旋转角无关，所以旋转时透视强度恒定，不会「转一下就整体胀缩」。
+        radius = float(
+            max(
+                float(np.linalg.norm(base_o, axis=1).max()),
+                float(np.linalg.norm(base_c, axis=1).max()),
+                1e-9,
+            )
+        )
+        cam_dist = _PERSPECTIVE_DISTANCE * radius
+
+        # 当前视角：先做正交旋转得到 u/v（显示坐标）与 w（真实深度），再做透视除法。
+        # w 越大越靠近相机 → 透视因子 cam_dist/(cam_dist-w) 越大 → 该点被放大、
+        # 与邻点的间距也更大；远处则被压缩。翻转平面时近端撑开、远端收拢，整体呈
+        # 梯形（近大远小），而不是所有间隙一起等比缩小。
+        u_o, v_o, _w_o, f_o = self._project_perspective(
+            disp_o, base_o, self._azimuth, self._elevation, cam_dist
+        )
+        u_c, v_c, w_c, f_c = self._project_perspective(
+            disp_c, base_c, self._azimuth, self._elevation, cam_dist
+        )
+
+        # 缩放系数固定按「默认朝向」计算（同样带透视），与当前旋转角无关：这样转的
+        # 时候整体取景不跳变，只有近大远小的透视形变在变化。
+        ru_o, rv_o, _, _ = self._project_perspective(
+            disp_o, base_o, 0.0, _DEFAULT_ELEVATION, cam_dist
+        )
+        ru_c, rv_c, _, _ = self._project_perspective(
+            disp_c, base_c, 0.0, _DEFAULT_ELEVATION, cam_dist
+        )
         scale = self._fit_scale(
             rect, np.concatenate([ru_o, ru_c]), np.concatenate([rv_o, rv_c])
         )
@@ -371,12 +432,13 @@ class PointCloudWidget(QWidget):
             color = _lerp_color(t)
 
             if disp[i] <= move_thr:
-                self._draw_point(p, x1[i], y1[i], color)
+                # 点的半径也随透视因子缩放，近处的点更大、远处更小。
+                self._draw_point(p, x1[i], y1[i], color, float(f_c[i]))
                 continue
 
             # 3D 位移箭头：从初始坐标 (x0,y0) 直接指向当前三维坐标 (x1,y1)。
-            # 起点 / 终点都是经过正交投影的 3D 位置，直线方向本就同时包含
-            # x/y/z 三个分量的贡献（z 由仰角映射为竖直偏移）。不做长度缩放，
+            # 起点 / 终点都是经过正交旋转 + 透视除法的 3D 位置，直线方向本就同时
+            # 包含 x/y/z 三个分量的贡献（z 由仰角映射为竖直偏移）。不做长度缩放，
             # 因此箭头终点永远正好落在当前点上，不会出现「箭头比当前点短 /
             # 当前点比箭头高」的错位。
             du = x1[i] - x0[i]
@@ -384,15 +446,15 @@ class PointCloudWidget(QWidget):
             length = math.hypot(du, dv)
             if length < 1e-6:
                 # 位移方向在屏幕上退化（几乎沿视线），用圆点表示当前点
-                self._draw_point(p, x1[i], y1[i], color)
+                self._draw_point(p, x1[i], y1[i], color, float(f_c[i]))
                 continue
 
             # 越靠近观察者的箭头画得越粗，强化 3D 纵深感。
             near = (float(w_c[i]) - w_lo) / w_span
             self._draw_arrow(p, x0[i], y0[i], x1[i], y1[i], color, near)
-            self._draw_origin_dot(p, x0[i], y0[i], color)
+            self._draw_origin_dot(p, x0[i], y0[i], color, float(f_o[i]))
             # 有箭头时也把当前点画出来，颜色与箭头一致
-            self._draw_point(p, x1[i], y1[i], color)
+            self._draw_point(p, x1[i], y1[i], color, float(f_c[i]))
 
         # z 数值标签：在每个当前点旁标出该点的 z 坐标，方便读取真实数值。
         # 点很多时只标出「发生位移」的点，避免标签过密互相遮挡。
@@ -402,19 +464,23 @@ class PointCloudWidget(QWidget):
         p.end()
 
     @staticmethod
-    def _draw_point(p: QPainter, x: float, y: float, color: QColor) -> None:
+    def _draw_point(
+        p: QPainter, x: float, y: float, color: QColor, size: float = 1.0
+    ) -> None:
+        # size 为透视因子（近处 >1、远处 <1），略作限幅避免极端远近时点过大 / 过小。
+        size = min(max(size, 0.6), 1.7)
         p.setPen(Qt.PenStyle.NoPen)
         glow = QColor(color)
         glow.setAlpha(46)
         p.setBrush(glow)
-        p.drawEllipse(QPointF(x, y), 5.0, 5.0)
+        p.drawEllipse(QPointF(x, y), 5.0 * size, 5.0 * size)
 
         p.setBrush(color)
-        p.drawEllipse(QPointF(x, y), 2.2, 2.2)
+        p.drawEllipse(QPointF(x, y), 2.2 * size, 2.2 * size)
 
         core = QColor(255, 255, 255, 180)
         p.setBrush(core)
-        p.drawEllipse(QPointF(x, y), 0.8, 0.8)
+        p.drawEllipse(QPointF(x, y), 0.8 * size, 0.8 * size)
 
     def _draw_arrow(
         self,
@@ -473,12 +539,15 @@ class PointCloudWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
 
     @staticmethod
-    def _draw_origin_dot(p: QPainter, x: float, y: float, color: QColor) -> None:
+    def _draw_origin_dot(
+        p: QPainter, x: float, y: float, color: QColor, size: float = 1.0
+    ) -> None:
+        size = min(max(size, 0.6), 1.7)
         p.setPen(Qt.PenStyle.NoPen)
         dim = QColor(color)
         dim.setAlpha(150)
         p.setBrush(dim)
-        p.drawEllipse(QPointF(x, y), 1.3, 1.3)
+        p.drawEllipse(QPointF(x, y), 1.3 * size, 1.3 * size)
 
     @staticmethod
     def _draw_arrow_head(
