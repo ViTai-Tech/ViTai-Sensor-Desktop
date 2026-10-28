@@ -55,26 +55,30 @@ class SensorRowWidget(QFrame):
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.addWidget(name)
 
-        # 原图
-        self.depth_view_2D = ImageLabel()
-        raw_tile = self._tile("深度图 2D", self.depth_view_2D)
 
-        # 深度图（3D 高程曲面）
-        self.depth_view = Depth3DWidget()
-        depth_tile = self._tile("深度图 3D", self.depth_view)
+       
 
         # 标记点云 + 位移箭头
         self.marker_view = PointCloudWidget()
         marker_tile = self._tile("点云位移", self.marker_view)
 
+        # 深度图（3D 高程曲面）
+        self.depth_view = Depth3DWidget()
+        depth_tile = self._tile("深度图 3D", self.depth_view)
+
+        # 原图
+        self.depth_view_2D = ImageLabel()
+        raw_tile = self._tile("深度图 2D", self.depth_view_2D)
         # 折线图（三根独立，竖排一列）：去掉右下角滑动状态后占满整列，随行高伸缩
         self.force_plots = ForcePlots()
         for p in (self.force_plots.fx_plot, self.force_plots.fy_plot, self.force_plots.fz_plot):
             p.setMinimumHeight(40)
 
+       
+       
+        h.addWidget(marker_tile, 3)
         h.addWidget(raw_tile, 3)
         h.addWidget(depth_tile, 3)
-        h.addWidget(marker_tile, 3)
         h.addWidget(self.force_plots, 4)
 
         v.addLayout(h, 1)

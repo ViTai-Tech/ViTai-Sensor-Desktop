@@ -17,8 +17,8 @@ _IMG_IDLE_STYLE = (
     "color: #475569;"
 )
 _IMG_LOADING_STYLE = (
-    "background-color: #0a1220;"
-    "border: 1px solid #22d3ee;"
+    "background-color: #070b14;"
+    "border: 1px solid #1a3a5c;"
     "border-radius: 8px;"
     "color: #67e8f9;"
 )
@@ -33,7 +33,8 @@ class ImageLabel(QLabel):
         self._source_array = None
         self._loading = False
         self.setStyleSheet(_IMG_IDLE_STYLE)
-        self.setText("NO SIGNAL")
+        self.setFont(QFont(_MONO_FONT, 10))
+        self.setText("无信号")
 
     def sizeHint(self):
         # 固定返回稳定尺寸，避免 setPixmap 改变 sizeHint 导致首帧到达时行高突变。
@@ -49,18 +50,18 @@ class ImageLabel(QLabel):
             return
         self._loading = loading
         if loading:
-            self.setPixmap(QPixmap())
-            self.setText("加载中...")
-            self.setFont(QFont(_MONO_FONT, 14, QFont.Weight.Bold))
+            self._pixmap = None
             self.setStyleSheet(_IMG_LOADING_STYLE)
         else:
-            self.setText("无信号")
-            self.setFont(QFont(_MONO_FONT, 10))
             self.setStyleSheet(_IMG_IDLE_STYLE)
+        self._update_display()
 
     def set_image(self, img_array, is_depth=False):
         if img_array is None:
             return
+
+        self._loading = False
+        self.setStyleSheet(_IMG_IDLE_STYLE)
 
         if len(img_array.shape) == 2:
             img = img_array.copy()
@@ -87,7 +88,12 @@ class ImageLabel(QLabel):
         self._source_array = rgb
         self._update_display()
 
+   
     def _update_display(self):
+        if self._loading:
+            self.setPixmap(QPixmap())
+            self.setText("加载中...")
+            return
         if self._pixmap and not self._pixmap.isNull():
             s = self.size()
             if s.width() > 1 and s.height() > 1:
@@ -202,10 +208,10 @@ class ImageViewer(QWidget):
 
         layout.addLayout(grid)
 
-    def set_loading(self, loading):
-        self.warped_view.set_loading(loading)
-        self.depth_view.set_loading(loading)
-        self.marker_view.set_loading(loading)
+    # def set_loading(self, loading):
+    #     self.warped_view.set_loading(loading)
+    #     self.depth_view.set_loading(loading)
+    #     self.marker_view.set_loading(loading)
 
     def update_data(self, data: dict):
         if VTSDataType.WARPED_IMG in data:

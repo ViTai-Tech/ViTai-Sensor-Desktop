@@ -553,6 +553,22 @@ def _get_offscreen_gl() -> _OffscreenGL:
     return _OFFSCREEN_GL
 
 
+# 外框与加载态样式统一对齐 point_cloud_view：同一套外框（深底 + 蓝边 + 圆角），
+# 正常态文字为灰色，加载态文字为青色，外框保持不变。
+_DEPTH_IDLE_STYLE = (
+    "background-color: #070b14;"
+    "border: 1px solid #1a3a5c;"
+    "border-radius: 8px;"
+    "color: #475569;"
+)
+_DEPTH_LOADING_STYLE = (
+    "background-color: #070b14;"
+    "border: 1px solid #1a3a5c;"
+    "border-radius: 8px;"
+    "color: #67e8f9;"
+)
+
+
 # --------------------------------------------------------------------- Qt 控件
 class Depth3DWidget(QLabel):
     """深度曲面控件：离屏渲染成图片显示，左键旋转、右键平移、双击复位。
@@ -571,13 +587,9 @@ class Depth3DWidget(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setScaledContents(False)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        self.setStyleSheet(
-            "background-color: #070b14;"
-            "border: 1px solid #1a3a5c;"
-            "border-radius: 8px;"
-            "color: #475569;"
-        )
-        self.setText("NO SIGNAL")
+        self.setStyleSheet(_DEPTH_IDLE_STYLE)
+        self.setText("无信号")
+        self._loading_style = False
 
         self._gl: _OffscreenGL | None = None
         self._scene: DepthScene | None = None
@@ -658,12 +670,23 @@ class Depth3DWidget(QLabel):
     def set_loading(self, loading: bool) -> None:
         if loading:
             self.clear()
+            self.setStyleSheet(_DEPTH_LOADING_STYLE)
+            self._loading_style = True
+            self.setText("加载中...")
         elif self._depth is None:
             self.clear_display()
 
     def clear_display(self) -> None:
         self.setPixmap(QPixmap())
+        self.setStyleSheet(_DEPTH_IDLE_STYLE)
+        self._loading_style = False
         self.setText("无信号")
+
+    def _apply_idle_style(self) -> None:
+        """数据重新显示后，把加载态的青色文字样式恢复为常规外框。"""
+        if self._loading_style:
+            self.setStyleSheet(_DEPTH_IDLE_STYLE)
+            self._loading_style = False
 
     def release_resources(self) -> None:
         """行被销毁前调用，释放该控件独占的 GL 资源。"""
@@ -803,6 +826,7 @@ class Depth3DWidget(QLabel):
         if dpr > 0:
             # 按物理像素渲染，再按设备像素比显示，避免高 DPI 下模糊
             pix.setDevicePixelRatio(dpr)
+        self._apply_idle_style()
         self.setPixmap(pix)
         self._dirty = False
 
@@ -821,6 +845,7 @@ class Depth3DWidget(QLabel):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        self._apply_idle_style()
         self.setPixmap(pix)
         self._dirty = False
 
