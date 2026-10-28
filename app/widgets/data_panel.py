@@ -109,9 +109,9 @@ class ForcePlots(QWidget):
         self.fz_curve.setData(x, arr[:, 2])
 
         # 右侧固定数值
-        self.fx_value.setText(f"{arr[-1, 0]:.2f}")
-        self.fy_value.setText(f"{arr[-1, 1]:.2f}")
-        self.fz_value.setText(f"{arr[-1, 2]:.2f}")
+        self.fx_value.setText(f"{arr[-1, 0]:.6f}")
+        self.fy_value.setText(f"{arr[-1, 1]:.6f}")
+        self.fz_value.setText(f"{arr[-1, 2]:.6f}")
 
         # 纵坐标：峰值维持到出框——以可见帧内最大绝对值为上下界，0 居中不变
         abs_arr = np.abs(arr)
