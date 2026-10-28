@@ -19,10 +19,11 @@ wheels/
 # Runtime files
 settings.json
 .env
+.history/
 
 # Model weights (large binaries, not uploaded)
 app/widgets/weight/
 
 # Packaging metadata
 *.egg-info/
-.history/
+
