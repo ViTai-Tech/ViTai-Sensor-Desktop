@@ -5,7 +5,7 @@
 
 - 形状兼容 ``(H, W, 3)``（如 20×20×3、20×10×3）、``(N, 3)``、``(N, 2)``
   以及对应的一维扁平数组；缺 z 时按 0 处理；
-- 点云画在「当前点」上，颜色由该点的位移长度决定；
+- 点云画在「当前点」上，颜色由该点「箭头的屏幕投影长度」决定；
 - 位移超过阈值的点不再画静止圆点，而是画一条「原始点 → 当前点」的 3D 箭头
   （与原 JS 的 PointCloudRenderer 逻辑一致：有箭头时隐藏当前粒子）；
 - 视图采用「正交旋转 + 透视除法」的相机模型：缩放系数只按「默认朝向」的投影
@@ -45,7 +45,7 @@ _COLOR_STOPS = (
     (0.00, (0.13, 0.83, 0.93)),
     (0.35, (0.20, 0.90, 0.45)),
     (0.65, (0.98, 0.90, 0.36)),
-    (1.00, (0.97, 0.45, 0.32)),
+    (1.00, (1.00, 0.00, 0.00)),
 )
 
 # 默认相机：方位角 0°、仰角 25°。
@@ -59,8 +59,20 @@ _DEFAULT_ELEVATION = math.radians(25.0)
 # 画布留白（像素），保证最外侧的点 / 箭头不会被边框裁掉。
 _MARGIN = 16.0
 
-# 位移阈值（占点云包围盒对角线的比例）：低于该值视为静止点，只画圆点。
-_MOVE_THRESHOLD_RATIO = 0.004
+# 是否渲染箭头的「最小位移」阈值（占参考网格对角 _REF_EXTENT 的比例）：
+# 与颜色同理，必须用「画出来的那支箭的真实 3D 长度」判断，而不是屏幕投影长度。
+# 显示空间位移向量 (dx, dy, dz*_Z_SCALE) 的模长对绕任意视角的旋转是**不变量**
+# （旋转只改变我们观察它的方向，不改变它本身的长度），因此旋转视角时「是否
+# 画箭头 / 什么颜色」都保持稳定。投影长度低于该比例×场景尺度的点视为静止、
+# 只画圆点；达到 / 超过则画箭头。
+_ARROW_MIN_RATIO = 0.01
+
+# 着色饱和的「最大位移」阈值（占参考网格对角 _REF_EXTENT 的比例）：
+# 用显示空间位移模长 / （场景尺度 × 该比例）归一化到 0..1，再映射到色带
+# _COLOR_STOPS（青→绿→黄→红）；达到 / 超过该值一律纯红。
+# 用「固定的参考网格尺度」做归一化基准（只取决于参考构型，与视角 / 帧无关），
+# 所以旋转视角颜色不变、各帧之间基准也稳定，无需按每帧数据自适应。
+_COLOR_MAX_RATIO = 0.6
 
 # z 坐标放大系数：原始 z 数值通常很小，按真实值显示时高度几乎看不见。
 # 这里只在「显示投影」阶段把 z 放大该倍数（竖杆高度、屏幕偏移都更明显），
@@ -80,21 +92,31 @@ _DELTA_ARROW_VISIBLE_THRESHOLD = 0.05
 
 
 def _lerp_color(t: float, alpha: int = 255) -> QColor:
-    """把 0..1 的归一化位移映射为色带上的颜色。"""
+    """把 0..1 的归一化箭头长度映射成 ``_COLOR_STOPS`` 色带上的颜色。
+
+    色带为青（最短）-> 绿 -> 黄 -> 红（最长），按相邻色标做线性 RGB 插值：
+    归一化长度 t 落在哪个区间，就在该区间两端颜色之间线性混合。
+    """
     t = min(max(t, 0.0), 1.0)
-    for i in range(len(_COLOR_STOPS) - 1):
-        t0, c0 = _COLOR_STOPS[i]
-        t1, c1 = _COLOR_STOPS[i + 1]
-        if t <= t1:
-            f: float = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
-            r = c0[0] + (c1[0] - c0[0]) * f
-            g = c0[1] + (c1[1] - c0[1]) * f
-            b = c0[2] + (c1[2] - c0[2]) * f
-            return QColor(int(r * 255), int(g * 255), int(b * 255), alpha)
-    _, c_last = _COLOR_STOPS[-1]
-    return QColor(
-        int(c_last[0] * 255), int(c_last[1] * 255), int(c_last[2] * 255), alpha
-    )
+
+    stops = _COLOR_STOPS
+    # 区间外直接取端点色（理论上 t 已被 clamp，这里兜底）。
+    if t <= stops[0][0]:
+        r, g, b = stops[0][1]
+    elif t >= stops[-1][0]:
+        r, g, b = stops[-1][1]
+    else:
+        for (p0, c0), (p1, c1) in zip(stops[:-1], stops[1:]):
+            if p0 <= t <= p1:
+                k = (t - p0) / (p1 - p0) if p1 > p0 else 0.0
+                r = c0[0] + (c1[0] - c0[0]) * k
+                g = c0[1] + (c1[1] - c0[1]) * k
+                b = c0[2] + (c1[2] - c0[2]) * k
+                break
+        else:
+            r, g, b = stops[-1][1]
+
+    return QColor(int(round(r * 255)), int(round(g * 255)), int(round(b * 255)), alpha)
 
 
 def _to_nx3(value) -> np.ndarray | None:
@@ -416,17 +438,25 @@ class PointCloudWidget(QWidget):
         def sy(v):
             return cy + v * scale
 
-        # 位移与颜色归一化
+        # 真实三维位移（仅给可选的 z 标签用）。着色与「是否画箭头」统一用下面
+        # 的 disp_vis —— 即「画出来的那支箭」在显示空间里的 3D 模长。
         disp = np.linalg.norm(cur - org, axis=1)
-        all_pts = np.vstack([org, cur])
-        diag = float(np.linalg.norm(all_pts.max(axis=0) - all_pts.min(axis=0)))
-        if diag < 1e-9:
-            diag = 1.0
-        move_thr = diag * _MOVE_THRESHOLD_RATIO
 
-        positive = disp[disp > move_thr]
-        ref = float(np.percentile(positive, 95)) if positive.size else 1.0
-        ref = max(ref, move_thr, 1e-9)
+        # 显示空间位移向量 (dx, dy, dz*_Z_SCALE) 的模长：绕任意视角旋转它是**不变量**
+        # （旋转只改变我们观察它的方向，不改变它本身的长度），所以旋转视角时颜色
+        # 和箭头判定都保持稳定，不会一会儿红一会儿蓝。
+        delta = cur - org
+        delta[:, 2] *= _Z_SCALE
+        disp_vis = np.linalg.norm(delta, axis=1)
+
+        # 参考网格（origin）的显示空间对角，作为归一化的「场景尺度」基准。
+        # 它只取决于固定的参考构型，与视角 / 帧无关 —— 因此旋转时颜色不变、
+        # 各帧之间基准也稳定，无需按每帧数据自适应。
+        ref_extent = max(
+            float(np.linalg.norm(base_o.max(axis=0) - base_o.min(axis=0))), 1e-9
+        )
+        color_max = max(ref_extent * _COLOR_MAX_RATIO, 1e-9)
+        move_thr = ref_extent * _ARROW_MIN_RATIO
 
         # 先生成每个点的屏幕坐标
         x0 = sx(u_o)
@@ -434,16 +464,31 @@ class PointCloudWidget(QWidget):
         x1 = sx(u_c)
         y1 = sy(v_c)
 
+        # 颜色按「箭头实际 3D 长度」着色：disp_vis / color_max 归一化到 0..1，
+        # 映射到色带 _COLOR_STOPS（青→绿→黄→红）；>= 1 一律纯红。
+        # 于是同一个点，力变大 → 箭头变长 → 颜色从青单调走到红；且旋转视角不变。
+        t_all = np.clip(disp_vis / color_max, 0.0, 1.0)
+
+        # 调试：打印本帧显示空间位移范围，方便把 _COLOR_MAX_RATIO 调合适。
+        if not hasattr(self, "_dbg_cnt"):
+            self._dbg_cnt = 0
+        self._dbg_cnt += 1
+        if self._dbg_cnt % 30 == 0:
+            print(
+                f"[PointCloud] disp_vis min={disp_vis.min():.2f} "
+                f"max={disp_vis.max():.2f}  color_max={color_max:.2f}  "
+                f"ref_extent={ref_extent:.2f}"
+            )
+
         # 箭头按深度从远到近绘制（w 越大越近），保证近处的箭头 / 点覆盖在上面。
         order = np.argsort(w_c)
         w_lo = float(w_c.min())
         w_span = max(float(w_c.max()) - w_lo, 1e-9)
 
         for i in order:
-            t = float(min(disp[i] / ref, 1.0))
-            color = _lerp_color(t)
+            color = _lerp_color(float(t_all[i]))
 
-            if disp[i] <= move_thr:
+            if disp_vis[i] <= move_thr:
                 # 点的半径也随透视因子缩放，近处的点更大、远处更小。
                 self._draw_point(p, x1[i], y1[i], color, float(f_c[i]))
                 continue
