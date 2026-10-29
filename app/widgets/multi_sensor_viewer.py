@@ -16,7 +16,7 @@ from app.widgets.depth_3d_view import Depth3DWidget
 from app.widgets.point_cloud_view import PointCloudWidget
 from app.widgets.data_panel import ForcePlots
 from pyvitaisdk import VTSDataType
-
+import numpy as np
 
 class SensorRowWidget(QFrame):
     """单个传感器的显示行：名称 + 原图(力叠加在左上角) + 深度图 + 标记点 + 折线图，全部在同一行。"""
@@ -28,20 +28,17 @@ class SensorRowWidget(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        # 整体行：右上角放小号滑动状态，下面为名称 + 图像 + 波形
+        # 整体行：右侧数据列顶部放小号滑动状态，其余为名称 + 图像 + 波形
         v = QVBoxLayout(self)
-        v.setContentsMargins(10, 6, 10, 8)
+        v.setContentsMargins(10, 8, 10, 8)
         v.setSpacing(4)
 
+        # 滑动状态放在右侧数据列顶部，不再叠加在图像瓦片上，
+        # 从而让瓦片上下边距一致。
         self.slip_label = QLabel("● --")
         self.slip_label.setFont(QFont("", 9, QFont.Weight.Bold))
         self.slip_label.setStyleSheet("color: #34d399;")
-        header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(0)
-        header.addStretch(1)
-        header.addWidget(self.slip_label)
-        v.addLayout(header)
+        self.slip_label.setContentsMargins(0, 0, 4, 0)
 
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
@@ -68,38 +65,50 @@ class SensorRowWidget(QFrame):
 
         # 原图
         self.depth_view_2D = ImageLabel()
-        raw_tile = self._tile("深度图 2D", self.depth_view_2D)
-        # 折线图（三根独立，竖排一列）：去掉右下角滑动状态后占满整列，随行高伸缩
+        raw_tile = self._tile("warp image", self.depth_view_2D)
+        # 折线图（三根独立，竖排一列）：随行高伸缩
         self.force_plots = ForcePlots()
         for p in (self.force_plots.fx_plot, self.force_plots.fy_plot, self.force_plots.fz_plot):
             p.setMinimumHeight(40)
 
-       
-       
+        # 右侧数据列：顶部放滑动状态，下方为力折线图
+        right_col = QWidget()
+        rc_l = QVBoxLayout(right_col)
+        rc_l.setContentsMargins(0, 0, 0, 0)
+        rc_l.setSpacing(4)
+        slip_row = QHBoxLayout()
+        slip_row.setContentsMargins(0, 0, 0, 0)
+        slip_row.addStretch(1)
+        slip_row.addWidget(self.slip_label)
+        rc_l.addLayout(slip_row)
+        rc_l.addWidget(self.force_plots, 1)
+
+        h.addWidget(raw_tile, 3)
         h.addWidget(marker_tile, 3)
         h.addWidget(depth_tile, 3)
-        h.addWidget(raw_tile, 3)
-       
-        h.addWidget(self.force_plots, 4)
+
+
+        h.addWidget(right_col, 4)
 
         v.addLayout(h, 1)
 
-    def _tile(self, title, view, overlay=None):
+    def _tile(self, title, view, overlay=None,
+              overlay_align=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft):
         w = QWidget()
         l = QVBoxLayout(w)
         l.setContentsMargins(0, 0, 0, 0)
-        l.setSpacing(3)
+        # l.setSpacing(3)
         cap = QLabel(title)
         cap.setObjectName("TileCaption")
         cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        l.addWidget(cap)
+        # l.addWidget(cap)
         if overlay is not None:
             body = QWidget()
             g = QGridLayout(body)
             g.setContentsMargins(0, 0, 0, 0)
             g.setSpacing(0)
             g.addWidget(view, 0, 0)
-            g.addWidget(overlay, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            g.addWidget(overlay, 0, 0, overlay_align)
             # 让图像填满 body，而不是被 Ignored 尺寸策略压到最小尺寸
             g.setColumnStretch(0, 1)
             g.setRowStretch(0, 1)
@@ -121,11 +130,25 @@ class SensorRowWidget(QFrame):
         if (
             VTSDataType.MARKER_ORIGIN_VECTOR in data
             and VTSDataType.MARKER_CURRENT_VECTOR in data
-        ):
-            # print("XYZ_VECTOR", data[VTSDataType.XYZ_VECTOR])
+        ):  
+
+            # delta_xyz 取点云自身的三维位移（XYZ_VECTOR - MARKER_ORIGIN_VECTOR），
+            # 这样整体箭头与点云共用同一坐标系，包含 z 轴变化并随旋转更新。
+            try:
+                from app.widgets.point_cloud_view import _to_nx3
+                _org3 = _to_nx3(data[VTSDataType.MARKER_ORIGIN_VECTOR])
+                _cur3 = _to_nx3(data[VTSDataType.XYZ_VECTOR])
+                if _org3 is not None and _cur3 is not None:
+                    _n = min(_org3.shape[0], _cur3.shape[0])
+                    delta_xyz = _cur3[:_n] - _org3[:_n]
+                else:
+                    delta_xyz = np.array(data[VTSDataType.MARKER_CURRENT_VECTOR]) - np.array(data[VTSDataType.MARKER_ORIGIN_VECTOR])
+            except Exception:
+                delta_xyz = np.array(data[VTSDataType.MARKER_CURRENT_VECTOR]) - np.array(data[VTSDataType.MARKER_ORIGIN_VECTOR])
             self.marker_view.set_points(
                 data[VTSDataType.MARKER_ORIGIN_VECTOR],
                 data[VTSDataType.XYZ_VECTOR],
+                delta_xyz,
             )
         if VTSDataType.FORCE6D_VECTOR in data:
             f = data[VTSDataType.FORCE6D_VECTOR]
@@ -186,9 +209,43 @@ class MultiSensorViewer(QWidget):
         self._scroll.setPageStep(1)
         self._scroll.valueChanged.connect(self._stack.setCurrentIndex)
 
-        body.addWidget(self._stack, 1)
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(0)
+        left.addWidget(self._build_header())
+        left.addWidget(self._stack, 1)
+
+        body.addLayout(left, 1)
         body.addWidget(self._scroll)
         outer.addLayout(body)
+
+    def _build_header(self):
+        """表头：列宽与下方 SensorRowWidget 的列保持一致。"""
+        header = QFrame()
+        header.setObjectName("TableHeader")
+        h = QHBoxLayout(header)
+        # 左侧 12(页边距) + 10(行边距)，右侧同理，保证与每行的列对齐
+        h.setContentsMargins(22, 6, 22, 6)
+        h.setSpacing(8)
+
+        name = QLabel("传感器")
+        name.setObjectName("TableHeaderCell")
+        name.setFixedWidth(96)
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(name)
+
+        for title, stretch in (
+            ("warp image", 3),
+            ("点云位移", 3),
+            ("深度图 3D", 3),
+            ("力  Fx / Fy / Fz", 4),
+        ):
+            lab = QLabel(title)
+            lab.setObjectName("TableHeaderCell")
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            h.addWidget(lab, stretch)
+
+        return header
 
     def wheelEvent(self, ev):
         # 滚轮翻页：下滑下一页，上滑上一页

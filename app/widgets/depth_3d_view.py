@@ -11,7 +11,8 @@
 - 左键旋转、右键平移、双击复位；
 - 如果离屏 GL 创建失败，自动退化为 2D 深度色图，保证不会一片空白。
 
-渲染参数与 test_depth.py 保持一致（同样的色带、双面光照、相机包围球适配）。
+渲染参数与 test_depth.py 保持一致（同样的色带、双面光照），取景按曲面在视口内的
+投影包围盒做 contain 适配（宽、高两方向取较紧的一边铺满），与 point_cloud_view 一致。
 """
 
 from __future__ import annotations
@@ -139,22 +140,29 @@ def _downsample(depth: np.ndarray, max_side: int) -> np.ndarray:
     return depth[::step, ::step]
 
 
-def fit_camera_distance(size, half_height: float, fov_deg: float, aspect: float,
-                        margin: float = 1.0) -> float:
-    """按曲面在 XZ 平面的宽度计算相机距离，使深度面在**宽度方向**铺满视口。
+def _default_view_basis():
+    """默认朝向下的相机基向量，返回 ``(eye_dir, up, right)``。
 
-    之前用 XZ 对角线半径 + 较大的 FOV 取景，对非方形深度图 / 非方形视口
-    会在左右两侧留出黑边。这里改为以深度图的宽度（X 方向半幅）为基准、用
-    水平 FOV 计算距离：让曲面的左右边缘正好贴到视口左右边缘，实现“跟框
-    宽度自适应”。高度方向允许按比例缩放（匹配的深宽比下也不会留黑边）。
+    与 ``OrbitCamera`` 的构造保持一致（``Rz(tilt_z) @ Rx(tilt_x)`` 作用于
+    ``_EYE_DIR0`` / ``_UP_0``），供取景时按默认朝向计算投影包围盒。
     """
-    wd, hd = size  # size = (depth_width, depth_height)
-    vfov = math.radians(fov_deg)
-    hfov = 2.0 * math.atan(math.tan(vfov * 0.5) * max(aspect, 1e-6))
-    tan_half_hfov = math.tan(hfov * 0.5)
-    if tan_half_hfov <= 0:
-        tan_half_hfov = 1e-6
-    return (wd * 0.5) / tan_half_hfov * margin
+    ax, az = _DEFAULT_TILT_X, _DEFAULT_TILT_Z
+    cx, sx = math.cos(ax), math.sin(ax)
+    cz, sz = math.cos(az), math.sin(az)
+    rx = np.array([[1.0, 0.0, 0.0],
+                   [0.0, cx, -sx],
+                   [0.0, sx, cx]], dtype=np.float64)
+    rz = np.array([[cz, -sz, 0.0],
+                   [sz, cz, 0.0],
+                   [0.0, 0.0, 1.0]], dtype=np.float64)
+    rot = rz @ rx
+    eye_dir = rot @ np.array([0.0, 1.0, 0.0])
+    up = rot @ np.array([0.0, 0.0, -1.0])
+    forward = -eye_dir
+    right = np.cross(forward, up)
+    right = right / max(np.linalg.norm(right), 1e-9)
+    up = np.cross(right, forward)
+    return eye_dir, up, right
 
 
 # --------------------------------------------------------------------- 相机 / 矩阵
@@ -374,7 +382,7 @@ _LIGHT_DIR = (0.35, 0.9, 0.35)
 _DEFAULT_TILT_X = math.radians(25.0)
 _DEFAULT_TILT_Z = 0.0
 
-# 相机取景留白系数：1.0 时曲面刚好铺满外框（宽度方向），不留黑边。
+# 相机取景留白系数：1.0 时曲面刚好铺满外框（宽、高两方向中较紧的一边），不留黑边。
 _FIT_MARGIN = 1.0
 
 class DepthScene:
@@ -608,8 +616,12 @@ class Depth3DWidget(QLabel):
         self.height_scale = 70.0
         # 旋转中心 = 当前深度曲面的包围盒中心；用户手动平移后不再自动跟随数据。
         self._center = np.array([0.0, 0.0, 0.0])
-        self._half_height = 1.0
         self._panned = False
+        # 取景用：默认朝向下每个顶点的投影分量（沿 right / up / 视线），
+        # 深度更新时算一次；每帧只需按当前宽高比反解相机距离。
+        self._fit_xv = None
+        self._fit_yv = None
+        self._fit_along = None
         self.camera = OrbitCamera(
             distance=10.0,
             tilt_x=_DEFAULT_TILT_X, tilt_z=_DEFAULT_TILT_Z, fov=40.0,
@@ -757,10 +769,16 @@ class Depth3DWidget(QLabel):
             return False
 
     def _fit_distance(self, aspect: float) -> float:
-        return fit_camera_distance(
-            self._depth_size, self._half_height, self.camera.fov, aspect,
-            margin=_FIT_MARGIN,
-        )
+        if self._fit_xv is None:
+            return 10.0
+        vfov = math.radians(self.camera.fov)
+        tan_v = max(math.tan(vfov * 0.5), 1e-6)
+        tan_h = max(tan_v * max(aspect, 1e-6), 1e-6)
+        # contain 适配：分别求“铺满宽度所需距离”和“铺满高度所需距离”，取较大者
+        # （等价于用两者中较小的适配比例），保证整个曲面（含高程起伏）都落在框内。
+        d_w = float(np.max(np.abs(self._fit_xv) / tan_h + self._fit_along))
+        d_h = float(np.max(np.abs(self._fit_yv) / tan_v + self._fit_along))
+        return max(d_w, d_h, 1e-6) * _FIT_MARGIN
 
     def _render_now(self) -> None:
         if self._depth is None:
@@ -776,7 +794,7 @@ class Depth3DWidget(QLabel):
 
         dpr = self.devicePixelRatioF()
         # 目标物理像素尺寸（显示用）：始终等于控件实际尺寸 × dpr，保证铺满外框。
-        # 全屏 / 拉宽外层容器时 tw/th 随之变大，绘制区即跟随宽度自适应。
+        # 控件随外层容器拉伸时 tw/th 随之变大，取景再按当前宽高比做 contain 适配。
         tw = max(8, int(w * dpr))
         th = max(8, int(h * dpr))
         # 实际 FBO 渲染分辨率受 MAX_RENDER 限制（多传感器时控制 GPU 负载），
@@ -827,7 +845,7 @@ class Depth3DWidget(QLabel):
         img = QImage(data, rw, rh, rw * 4, QImage.Format.Format_RGBA8888).copy()
         img = img.mirrored(False, True)  # OpenGL 原点在左下
         # FBO 分辨率可能受 MAX_RENDER 限制而小于目标尺寸，放大到控件物理尺寸，
-        # 保证深度图绘制区域随外框宽度自适应铺满（宽高比一致，不会变形）。
+        # 保证绘制区铺满外框（宽高比一致，不会变形）。
         if (img.width(), img.height()) != (tw, th):
             img = img.scaled(
                 tw, th,
@@ -867,32 +885,59 @@ class Depth3DWidget(QLabel):
         if resized:
             self._depth_size = (w, h)
             # 高度 = 归一化深度(0~1) * 系数；用固定系数做场景高度，
-            # 相机按实际高度范围适配，XY 平面尺寸不随高度变化。
+            # 相机按整个曲面包围盒（含高度）做 contain 适配。
             self.height_scale = DEPTH_HEIGHT_COEFF
             self._panned = False
+            # 旋转 / 取景中心取曲面包围盒中心：X/Z 居中于原点，竖直方向取高度范围
+            # 中点，使 contain 取景后曲面在框内上下居中。只在分辨率变化时计算一次，
+            # 不逐帧跟随实时 min/max，避免按压导致曲面起伏时整幅图上下抖动。
+            lo = float(np.min(self._depth))
+            hi = float(np.max(self._depth))
+            self._center = np.array(
+                [0.0, 0.5 * (lo + hi) * self.height_scale, 0.0], dtype=np.float64
+            )
+            # 取景包围盒同样只在分辨率变化时算一次：这样相机距离只随外框宽高比
+            # 变化（跟框自适应），而曲面局部起伏（按压）不会让整幅图忽大忽小。
+            self._prepare_fit_projection()
         return resized
 
     def _recenter_target(self, force: bool = False) -> None:
-        """把旋转中心固定在图像基准平面中心 ``(0, 0, 0)``。
+        """把旋转 / 取景中心跟随到曲面包围盒中心（在分辨率变化时更新，见
+        ``_prepare_geometry``）。
 
-        网格在 XZ 平面上本来就居中于原点，因此旋转中心直接取原点即可。竖直
-        方向（高度轴）**固定为 0**，不再按``(min + max) / 2``去追踪曲面高度：
-        否则一旦深度出现起伏，中心会跟着升高，整幅图在画面中上下漂移、抖动。
+        竖直方向取高度范围中点，使 contain 取景后曲面在框内上下居中；该中心只在
+        分辨率变化时计算一次，不逐帧跟随实时 min/max，避免按压起伏时整幅图抖动。
 
         非强制更新时，仅在用户没有手动平移、也没有按住鼠标时复位中心；
         一旦用户平移过（``_panned``），就不再自动复位，避免覆盖用户视角。
         """
         if self._depth is None:
             return
-        # 旋转中心固定在基准平面，高度轴恒为 0，不随深度高度变化。
-        self._center = np.array([0.0, 0.0, 0.0], dtype=np.float64)
-        # 仅用于相机适配的竖直半幅（取景用，不影响旋转中心位置）。
-        lo = float(np.min(self._depth))
-        hi = float(np.max(self._depth))
-        self._half_height = max(1e-3, 0.5 * (hi - lo) * self.height_scale)
         if force or (not self._panned
                      and self._button == Qt.MouseButton.NoButton):
             self.camera.target = self._center.copy()
+
+    def _prepare_fit_projection(self) -> None:
+        """预计算默认朝向下每个顶点沿 ``right`` / ``up`` / 视线的分量。
+
+        取景时（``_fit_distance``）只需把这些分量按当前宽高比换算成所需相机
+        距离，避免每帧重新投影全部顶点。顶点坐标与 ``build_mesh`` 一致：
+        X/Z 居中于原点，Y = 归一化深度 × 高度系数；再相对旋转中心平移。
+        """
+        if self._depth is None:
+            self._fit_xv = self._fit_yv = self._fit_along = None
+            return
+        h, w = self._depth.shape
+        xs = np.arange(w, dtype=np.float64) - (w - 1) * 0.5
+        zs = np.arange(h, dtype=np.float64) - (h - 1) * 0.5
+        gx, gz = np.meshgrid(xs, zs)
+        gy = self._depth.astype(np.float64) * self.height_scale
+        pts = np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=1)
+        pts = pts - self._center
+        eye_dir, up, right = _default_view_basis()
+        self._fit_xv = pts @ right
+        self._fit_yv = pts @ up
+        self._fit_along = pts @ eye_dir
 
     # ----------------------------------------------------------- 交互
     def _cam_ready(self) -> bool:

@@ -67,12 +67,16 @@ _MOVE_THRESHOLD_RATIO = 0.004
 # 不参与位移长度 / 颜色的计算，因此不会改变位移着色。
 # 取正值：z 增大时点向上抬（深度轴朝上）；透视深度 w 也用真实 z，方向与显示一致。
 # 需要把深度轴反过来时，把它改成负值即可。
-_Z_SCALE = 200.0
+_Z_SCALE = 500.0
 
 # 透视相机距离系数：相机沿视线方向到点云中心的距离 = 场景半径 × 该系数。
 # 系数越小透视越强（近大远小 / 翻转时的梯形越明显），越大越接近正交投影。
 # 取值需 > 1 才能保证所有点都落在相机前方（分母 cam_dist - w 恒为正）。
 _PERSPECTIVE_DISTANCE = 2.2
+
+# 红色整体位移箭头的可见阈值：位移幅值（各分量的欧氏范数）小于该值时不绘制。
+# 先用较小的数测试，确认效果后再调整。
+_DELTA_ARROW_VISIBLE_THRESHOLD = 0.05
 
 
 def _lerp_color(t: float, alpha: int = 255) -> QColor:
@@ -156,6 +160,7 @@ class PointCloudWidget(QWidget):
 
         self._origin: np.ndarray | None = None
         self._current: np.ndarray | None = None
+        self._delta_xyz: np.ndarray | None = None
         self._loading = False
 
         self._azimuth = _DEFAULT_AZIMUTH
@@ -178,7 +183,7 @@ class PointCloudWidget(QWidget):
         return QSize(120, 90)
 
     # ------------------------------------------------------------ public API
-    def set_points(self, origin, current) -> None:
+    def set_points(self, origin, current, delta_xyz) -> None:
         """每收到一帧 marker 数据调用一次。
 
         ``origin`` = MARKER_ORIGIN_VECTOR，``current`` = MARKER_CURRENT_VECTOR。
@@ -202,6 +207,11 @@ class PointCloudWidget(QWidget):
         # 强制拷贝：SDK 可能复用同一块缓冲区，避免绘制前被下一帧改写。
         self._origin = np.array(org[:n], copy=True)
         self._current = np.array(cur[:n], copy=True)
+        dlt = _to_nx3(delta_xyz)
+        if dlt is not None and dlt.shape[0] > 0:
+            self._delta_xyz = np.array(dlt[: min(dlt.shape[0], n)], copy=True)
+        else:
+            self._delta_xyz = None
         self._loading = False
         self.update()
 
@@ -211,6 +221,7 @@ class PointCloudWidget(QWidget):
     def clear(self) -> None:
         self._origin = None
         self._current = None
+        self._delta_xyz = None
         self._loading = False
         self.update()
 
@@ -219,6 +230,7 @@ class PointCloudWidget(QWidget):
         if loading:
             self._origin = None
             self._current = None
+            self._delta_xyz = None
         self.update()
 
     def set_show_z_labels(self, show: bool) -> None:
@@ -461,6 +473,67 @@ class PointCloudWidget(QWidget):
         # if self._show_z_labels:
         #     self._draw_z_labels(p, x1, y1, cur, disp, move_thr)
 
+        # 红色半透明箭头：以点云系统原点（包围盒中心，投影到屏幕中心）为起点，
+        # 方向 / 长度由 delta_xyz 的平均位移决定（总位移 / 点数），放大显示，
+        # 便于观察整体运动方向。半透明红色，渲染尺寸更大更醒目。
+        # 若未提供 delta_xyz，则退化为使用点云自身的三维位移 (current - origin)，
+        # 保证与点云一致、包含 z 轴并随旋转更新。
+        _dd = self._delta_xyz
+        if _dd is None and self._origin is not None and self._current is not None:
+            try:
+                _o = self._origin
+                _c = self._current
+                _n = min(_o.shape[0], _c.shape[0])
+                _dd = _c[:_n] - _o[:_n]
+            except Exception:
+                _dd = None
+        if _dd is not None and _dd.size:
+            dd = _dd
+            if dd.ndim == 2 and dd.shape[1] == 3 and dd.shape[0] > 0:
+                vec = dd.mean(axis=0)
+            elif dd.ndim == 1 and dd.size == 3:
+                vec = np.asarray(dd, dtype=np.float64).reshape(3)
+            else:
+                vec = None
+            if vec is not None and np.all(np.isfinite(vec)) and float(np.linalg.norm(vec)) > _DELTA_ARROW_VISIBLE_THRESHOLD:
+                vec_disp = vec.copy()
+                vec_disp[2] *= _Z_SCALE
+                arr_disp = vec_disp.reshape(1, 3)
+                arr_depth = vec.reshape(1, 3)
+                u_tip, v_tip, _, _ = self._project_perspective(
+                    arr_disp, arr_depth, self._azimuth, self._elevation, cam_dist
+                )
+                # "大一点"：放大显示，保证可见
+                amp = 100.0
+                tip_x = cx + float(u_tip[0]) * scale * amp
+                tip_y = cy + float(v_tip[0]) * scale * amp
+                dx = tip_x - cx
+                dy = tip_y - cy
+                length = math.hypot(dx, dy)
+                # 最小长度保证可见
+                if length < 20.0:
+                    if length > 1e-9:
+                        tip_x = cx + dx / length * 40.0
+                        tip_y = cy + dy / length * 40.0
+                    else:
+                        tip_x = cx + 40.0
+                        tip_y = cy
+                    length = math.hypot(tip_x - cx, tip_y - cy)
+                # 最大长度避免出框
+                max_len = min(rect.width(), rect.height()) * 0.45
+                if length > max_len and length > 1e-9:
+                    s = max_len / length
+                    tip_x = cx + (tip_x - cx) * s
+                    tip_y = cy + (tip_y - cy) * s
+                # 粗细随合力（位移向量模长）变化：默认与原来的线宽一致，
+                # 合力越大越粗，用 sqrt 压缩避免小幅波动就剧烈变化。
+                # 最大值在此修改：7.0 是基础粗细，末尾 9.0 是「额外可增粗的上限」，
+                # 改大即可让箭头更粗（改小则更收敛）。
+                strength = float(np.linalg.norm(vec))
+                grow = math.sqrt(max(strength / _DELTA_ARROW_VISIBLE_THRESHOLD, 1.0)) - 1.0
+                thickness = 7.0 + min(grow * 1.8, 20.0)
+                self._draw_delta_arrow(p, cx, cy, tip_x, tip_y, thickness)
+
         p.end()
 
     @staticmethod
@@ -577,6 +650,82 @@ class PointCloudWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(color)
         p.drawPolygon(poly)
+
+    @staticmethod
+    def _draw_delta_arrow(
+        p: QPainter,
+        x0: float,
+        y0: float,
+        x1: float,
+        y1: float,
+        thickness: float = 7.0,
+    ) -> None:
+        """以点云系统原点为起点的红色半透明整体位移箭头。
+
+        ``thickness`` 为箭杆粗细，由调用方按合力大小算好后传入。
+        形状为「收腰箭杆 + 实心三角箭头」，带外发光、描边和高光，
+        比单纯的粗线段更像一支箭头。
+        """
+        du = x1 - x0
+        dv = y1 - y0
+        length = math.hypot(du, dv)
+        if length < 1e-6:
+            return
+
+        ux, uy = du / length, dv / length
+        px, py = -uy, ux  # 单位法向量
+
+        shaft_w = min(max(float(thickness), 4.0), 30.0)
+        head_len = min(max(shaft_w * 2.0, 18.0), length * 0.55)
+        head_w = shaft_w * 2.6
+        shaft_half = shaft_w * 0.5
+        head_half = head_w * 0.5
+        base_x = x1 - ux * head_len
+        base_y = y1 - uy * head_len
+
+        # 1) 柔和外发光：用略粗的圆头线段打底，让箭头更立体
+        p.setPen(
+            QPen(
+                QColor(255, 70, 70, 45),
+                shaft_w + 9.0,
+                Qt.PenStyle.SolidLine,
+                Qt.PenCapStyle.RoundCap,
+            )
+        )
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawLine(QPointF(x0, y0), QPointF(base_x, base_y))
+
+        # 2) 收腰箭杆：尾部略窄、靠近箭头处略宽的梯形，半透明填充 + 深色描边
+        tail_narrow = 0.82
+        shaft_poly = QPolygonF(
+            [
+                QPointF(
+                    x0 + px * shaft_half * tail_narrow,
+                    y0 + py * shaft_half * tail_narrow,
+                ),
+                QPointF(base_x + px * shaft_half, base_y + py * shaft_half),
+                QPointF(base_x - px * shaft_half, base_y - py * shaft_half),
+                QPointF(
+                    x0 - px * shaft_half * tail_narrow,
+                    y0 - py * shaft_half * tail_narrow,
+                ),
+            ]
+        )
+        p.setPen(QPen(QColor(165, 20, 20, 170), 1.2))
+        p.setBrush(QColor(255, 64, 64, 150))
+        p.drawPolygon(shaft_poly)
+
+        # 3) 实心三角箭头：颜色更浓，覆盖在箭杆前端
+        head_poly = QPolygonF(
+            [
+                QPointF(base_x + px * head_half, base_y + py * head_half),
+                QPointF(x1, y1),
+                QPointF(base_x - px * head_half, base_y - py * head_half),
+            ]
+        )
+        p.setPen(QPen(QColor(150, 18, 18, 200), 1.2))
+        p.setBrush(QColor(255, 44, 44, 220))
+        p.drawPolygon(head_poly)
 
     # ------------------------------------------------------------ 交互
     def _can_interact(self) -> bool:

@@ -187,6 +187,17 @@ QGroupBox::title {
     color: #22d3ee;
 }
 
+QFrame#TableHeader {
+    background-color: #0d1420;
+    border-bottom: 1px solid #1a3a5c;
+}
+#TableHeaderCell {
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
 QFrame#SensorRow {
     background-color: #0f172a;
     border: 1px solid #1a3a5c;

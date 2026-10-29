@@ -90,7 +90,7 @@ class ForcePlots(QWidget):
 
     def _new_value_label(self, color):
         lab = QLabel("--")
-        lab.setFixedWidth(52)
+        lab.setFixedWidth(80)
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lab.setFont(QFont(_MONO_FONT, 8, QFont.Weight.Bold))
         lab.setStyleSheet(f"color: {color};")
@@ -199,10 +199,10 @@ class DataPanel(QWidget):
         slip_group = QGroupBox("滑动检测")
         sg_layout = QHBoxLayout(slip_group)
         self.slip_indicator = QLabel("●")
-        self.slip_indicator.setFont(QFont("", 18))
+        self.slip_indicator.setFont(QFont("", 12))
         self.slip_indicator.setStyleSheet("color: #34d399")
         self.slip_label = QLabel("--")
-        self.slip_label.setFont(QFont(_MONO_FONT, 14, QFont.Weight.Bold))
+        self.slip_label.setFont(QFont(_MONO_FONT, 11, QFont.Weight.Bold))
         sg_layout.addWidget(self.slip_indicator)
         sg_layout.addWidget(self.slip_label)
         sg_layout.addStretch()
