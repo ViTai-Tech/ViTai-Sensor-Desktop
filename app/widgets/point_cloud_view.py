@@ -473,13 +473,7 @@ class PointCloudWidget(QWidget):
         if not hasattr(self, "_dbg_cnt"):
             self._dbg_cnt = 0
         self._dbg_cnt += 1
-        if self._dbg_cnt % 30 == 0:
-            print(
-                f"[PointCloud] disp_vis min={disp_vis.min():.2f} "
-                f"max={disp_vis.max():.2f}  color_max={color_max:.2f}  "
-                f"ref_extent={ref_extent:.2f}"
-            )
-
+       
         # 箭头按深度从远到近绘制（w 越大越近），保证近处的箭头 / 点覆盖在上面。
         order = np.argsort(w_c)
         w_lo = float(w_c.min())
