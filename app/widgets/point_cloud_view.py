@@ -86,9 +86,14 @@ _Z_SCALE = 500.0
 # 取值需 > 1 才能保证所有点都落在相机前方（分母 cam_dist - w 恒为正）。
 _PERSPECTIVE_DISTANCE = 2.2
 
-# 红色整体位移箭头的可见阈值：位移幅值（各分量的欧氏范数）小于该值时不绘制。
-# 先用较小的数测试，确认效果后再调整。
-_DELTA_ARROW_VISIBLE_THRESHOLD = 0.05
+# 红色整体位移（合力）箭头的阈值：幅值（各分量的欧氏范数）低于「最短阈值」
+# 时不绘制；达到 / 超过「最长阈值」时画到最长 / 最粗；介于两者之间的幅值线性
+# 归一化到 0..1，箭头长度与粗细在最短与最长之间均匀分布。
+_DELTA_ARROW_MIN_THRESHOLD = 0.05
+_DELTA_ARROW_MAX_THRESHOLD = 0.5
+# 合力箭头的粗细范围（像素）：最短阈值时取最小值，最长阈值时取最大值。
+_DELTA_ARROW_MIN_THICKNESS = 6.0
+_DELTA_ARROW_MAX_THICKNESS = 26.0
 
 
 def _lerp_color(t: float, alpha: int = 255) -> QColor:
@@ -416,17 +421,18 @@ class PointCloudWidget(QWidget):
             disp_c, base_c, self._azimuth, self._elevation, cam_dist
         )
 
-        # 缩放系数固定按「默认朝向」计算（同样带透视），与当前旋转角无关：这样转的
-        # 时候整体取景不跳变，只有近大远小的透视形变在变化。
+        # 缩放系数固定按「默认朝向」的**参考构型（原始点 origin 网格）**计算，只带
+        # 透视、与当前旋转角无关：这样转的时候整体取景不跳变，只有近大远小的透视
+        # 形变在变化。
+        #
+        # ⚠️ 关键：取景基准**只**用原始点 origin，绝不把被位移拉远的当前点 current
+        # 算进去。否则箭头一旦很长，current 把投影包围盒撑大，缩放系数会跟着变小，
+        # 整个点云系统就被「缩小」来迁就长箭头。现在箭头再长也只延伸到屏幕外，
+        # 点云系统的基准大小恒定，只有鼠标滚轮缩放（self._zoom）能改变整体大小。
         ru_o, rv_o, _, _ = self._project_perspective(
             disp_o, base_o, 0.0, _DEFAULT_ELEVATION, cam_dist
         )
-        ru_c, rv_c, _, _ = self._project_perspective(
-            disp_c, base_c, 0.0, _DEFAULT_ELEVATION, cam_dist
-        )
-        scale = self._fit_scale(
-            rect, np.concatenate([ru_o, ru_c]), np.concatenate([rv_o, rv_c])
-        )
+        scale = self._fit_scale(rect, ru_o, rv_o)
 
         # 投影前已减去 3D 包围盒中心，投影面中点即为 0；右键平移按屏幕像素叠加。
         cx = rect.center().x() + self._pan_x
@@ -534,44 +540,50 @@ class PointCloudWidget(QWidget):
                 vec = np.asarray(dd, dtype=np.float64).reshape(3)
             else:
                 vec = None
-            if vec is not None and np.all(np.isfinite(vec)) and float(np.linalg.norm(vec)) > _DELTA_ARROW_VISIBLE_THRESHOLD:
-                vec_disp = vec.copy()
-                vec_disp[2] *= _Z_SCALE
-                arr_disp = vec_disp.reshape(1, 3)
-                arr_depth = vec.reshape(1, 3)
-                u_tip, v_tip, _, _ = self._project_perspective(
-                    arr_disp, arr_depth, self._azimuth, self._elevation, cam_dist
-                )
-                # "大一点"：放大显示，保证可见
-                amp = 100.0
-                tip_x = cx + float(u_tip[0]) * scale * amp
-                tip_y = cy + float(v_tip[0]) * scale * amp
-                dx = tip_x - cx
-                dy = tip_y - cy
-                length = math.hypot(dx, dy)
-                # 最小长度保证可见
-                if length < 20.0:
-                    if length > 1e-9:
-                        tip_x = cx + dx / length * 40.0
-                        tip_y = cy + dy / length * 40.0
-                    else:
-                        tip_x = cx + 40.0
-                        tip_y = cy
-                    length = math.hypot(tip_x - cx, tip_y - cy)
-                # 最大长度避免出框
-                max_len = min(rect.width(), rect.height()) * 0.45
-                if length > max_len and length > 1e-9:
-                    s = max_len / length
-                    tip_x = cx + (tip_x - cx) * s
-                    tip_y = cy + (tip_y - cy) * s
-                # 粗细随合力（位移向量模长）变化：默认与原来的线宽一致，
-                # 合力越大越粗，用 sqrt 压缩避免小幅波动就剧烈变化。
-                # 最大值在此修改：7.0 是基础粗细，末尾 9.0 是「额外可增粗的上限」，
-                # 改大即可让箭头更粗（改小则更收敛）。
+            if vec is not None and np.all(np.isfinite(vec)):
                 strength = float(np.linalg.norm(vec))
-                grow = math.sqrt(max(strength / _DELTA_ARROW_VISIBLE_THRESHOLD, 1.0)) - 1.0
-                thickness = 7.0 + min(grow * 1.8, 20.0)
-                self._draw_delta_arrow(p, cx, cy, tip_x, tip_y, thickness)
+                # 最短 / 最长阈值：幅值低于最短阈值不绘制；达到 / 超过最长阈值时
+                # 一律按「最长」处理；两者之间归一化到 0..1，箭头长度与粗细线性分布。
+                if strength > _DELTA_ARROW_MIN_THRESHOLD:
+                    # 在最短阈值与最长阈值之间线性归一化到 0..1。
+                    t = float(
+                        np.clip(
+                            (strength - _DELTA_ARROW_MIN_THRESHOLD)
+                            / (_DELTA_ARROW_MAX_THRESHOLD - _DELTA_ARROW_MIN_THRESHOLD),
+                            0.0,
+                            1.0,
+                        )
+                    )
+
+                    # 投影得到合力方向（已含当前视角旋转），归一化为单位方向。
+                    vec_disp = vec.copy()
+                    vec_disp[2] *= _Z_SCALE
+                    arr_disp = vec_disp.reshape(1, 3)
+                    arr_depth = vec.reshape(1, 3)
+                    u_tip, v_tip, _, _ = self._project_perspective(
+                        arr_disp, arr_depth, self._azimuth, self._elevation, cam_dist
+                    )
+                    dir_x = float(u_tip[0])
+                    dir_y = float(v_tip[0])
+                    dir_len = math.hypot(dir_x, dir_y)
+                    if dir_len > 1e-9:
+                        dx, dy = dir_x / dir_len, dir_y / dir_len
+                    else:
+                        dx, dy = 1.0, 0.0
+
+                    # 长度在「最短可视长度」与「不出框的最长长度」之间归一化分布：
+                    # 最短阈值→最短长度，最长阈值→最长长度，中间线性插值。
+                    min_len = 28.0
+                    max_len = min(rect.width(), rect.height()) * 0.45
+                    length = min_len + (max_len - min_len) * t
+                    tip_x = cx + dx * length
+                    tip_y = cy + dy * length
+
+                    # 粗细同样随归一化系数 t 在最小 / 最大粗细之间分布。
+                    thickness = _DELTA_ARROW_MIN_THICKNESS + (
+                        _DELTA_ARROW_MAX_THICKNESS - _DELTA_ARROW_MIN_THICKNESS
+                    ) * t
+                    self._draw_delta_arrow(p, cx, cy, tip_x, tip_y, thickness)
 
         p.end()
 
@@ -754,7 +766,8 @@ class PointCloudWidget(QWidget):
         p.setBrush(QColor(255, 64, 64, 150))
         p.drawPolygon(shaft_poly)
 
-        # 3) 实心三角箭头：颜色更浓，覆盖在箭杆前端
+        # 3) 实心三角箭头：与箭杆一致整体半透明（不再用高不透明度），
+        # 整支合力箭头保持通透、不与点云抢视觉。
         head_poly = QPolygonF(
             [
                 QPointF(base_x + px * head_half, base_y + py * head_half),
@@ -762,8 +775,8 @@ class PointCloudWidget(QWidget):
                 QPointF(base_x - px * head_half, base_y - py * head_half),
             ]
         )
-        p.setPen(QPen(QColor(150, 18, 18, 200), 1.2))
-        p.setBrush(QColor(255, 44, 44, 220))
+        p.setPen(QPen(QColor(150, 18, 18, 150), 1.2))
+        p.setBrush(QColor(255, 44, 44, 150))
         p.drawPolygon(head_poly)
 
     # ------------------------------------------------------------ 交互
