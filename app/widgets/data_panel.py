@@ -108,6 +108,7 @@ class ForcePlots(QWidget):
         self.fy_curve.setData(x, arr[:, 1])
         self.fz_curve.setData(x, arr[:, 2])
 
+
         # 右侧固定数值
         self.fx_value.setText(f"{arr[-1, 0]:.3f}")
         self.fy_value.setText(f"{arr[-1, 1]:.3f}")
