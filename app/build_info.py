@@ -8,7 +8,7 @@
 
 GIT_BRANCH = "unknown"
 SDK_WHEEL = "unknown"
-
+APP_VERSION = "unknown"
 
 def get_build_info() -> str:
     """返回适合显示在 UI 中的构建信息。"""
