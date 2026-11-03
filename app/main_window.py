@@ -13,7 +13,7 @@ from app.build_info import APP_VERSION, GIT_BRANCH, SDK_WHEEL
 from app.widgets.device_panel import DevicePanel
 from app.widgets.multi_sensor_viewer import MultiSensorViewer
 from app.sensor_worker import SensorWorker
-from pyvitaisdk import VTSDataType
+from app.sdk import VTSDataType
 
 
 class MainWindow(QMainWindow):
