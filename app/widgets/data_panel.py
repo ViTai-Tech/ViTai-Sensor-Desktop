@@ -90,9 +90,9 @@ class ForcePlots(QWidget):
 
     def _new_value_label(self, color):
         lab = QLabel("--")
-        lab.setFixedWidth(80)
+        lab.setFixedWidth(100)
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        lab.setFont(QFont(_MONO_FONT, 8, QFont.Weight.Bold))
+        lab.setFont(QFont(_MONO_FONT, 13, QFont.Weight.Bold))
         lab.setStyleSheet(f"color: {color};")
         return lab
 
