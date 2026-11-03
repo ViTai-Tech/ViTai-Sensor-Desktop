@@ -10,6 +10,18 @@ from pyvitaisdk import VTSDataType
 
 _MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"
 
+
+def _fix_orientation(arr: np.ndarray) -> np.ndarray:
+    """515 传感器输出朝向修正。
+
+    正确图顺时针角点为 A(左上) B(右上) C(右下) D(左下)，实际输出为 C B A D，
+    即沿「副对角线(右上↔左下)」的镜像，等价于先转置再旋转 180°。
+
+    若实测只需要普通的 180° 旋转（不交换宽高），把下面一行换成：
+        return cv2.rotate(arr, cv2.ROTATE_180)
+    """
+    return cv2.rotate(cv2.transpose(arr), cv2.ROTATE_180)
+
 _IMG_IDLE_STYLE = (
     "background-color: #070b14;"
     "border: 1px solid #1a3a5c;"
@@ -32,9 +44,17 @@ class ImageLabel(QLabel):
         self._pixmap = None
         self._source_array = None
         self._loading = False
+        self._orient_fix = False
         self.setStyleSheet(_IMG_IDLE_STYLE)
         self.setFont(QFont(_MONO_FONT, 10))
         self.setText("无信号")
+
+    def set_orientation_fix(self, enabled: bool) -> None:
+        """是否启用 GF515 系列传感器的输出朝向修正（ABCD -> CBAD 的镜像还原）。
+
+        由上层根据传感器 SN 是否以 ``GF515`` 开头来调用。
+        """
+        self._orient_fix = bool(enabled)
 
     def sizeHint(self):
         # 固定返回稳定尺寸，避免 setPixmap 改变 sizeHint 导致首帧到达时行高突变。
@@ -59,6 +79,11 @@ class ImageLabel(QLabel):
     def set_image(self, img_array, is_depth=False):
         if img_array is None:
             return
+
+        # GF515 系列传感器输出朝向修正（ABCD -> CBAD 的镜像还原），
+        # 是否启用由 set_orientation_fix 根据 SN 决定是否开启。
+        if self._orient_fix:
+            img_array = _fix_orientation(img_array)
 
         self._loading = False
         self.setStyleSheet(_IMG_IDLE_STYLE)

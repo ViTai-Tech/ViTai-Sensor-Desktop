@@ -33,6 +33,19 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 
+# --------------------------------------------------------------------- 朝向修正
+def _fix_orientation(arr: np.ndarray) -> np.ndarray:
+    """515 传感器输出朝向修正。
+
+    正确图顺时针角点为 A(左上) B(右上) C(右下) D(左下)，实际输出为 C B A D，
+    即沿「副对角线(右上↔左下)」的镜像，等价于先转置再旋转 180°。
+
+    若实测只需要普通的 180° 旋转（不交换宽高），把下面一行换成：
+        return cv2.rotate(arr, cv2.ROTATE_180)
+    """
+    return cv2.rotate(cv2.transpose(arr), cv2.ROTATE_180)
+
+
 # --------------------------------------------------------------------- 颜色 / 几何
 # 深度色带：深蓝 -> 蓝 -> 青 -> 绿 -> 黄绿 -> 暖黄 -> 近白
 _STOPS = np.array(
@@ -597,6 +610,7 @@ class Depth3DWidget(QLabel):
         self.setStyleSheet(_DEPTH_IDLE_STYLE)
         self.setText("无信号")
         self._loading_style = False
+        self._orient_fix = False
 
         self._gl: _OffscreenGL | None = None
         self._scene: DepthScene | None = None
@@ -644,6 +658,13 @@ class Depth3DWidget(QLabel):
         return QSize(100, 70)
 
     # ----------------------------------------------------------- public API
+    def set_orientation_fix(self, enabled: bool) -> None:
+        """是否启用 GF515 系列传感器的输出朝向修正（ABCD -> CBAD 的镜像还原）。
+
+        由上层根据传感器 SN 是否以 ``GF515`` 开头来调用。
+        """
+        self._orient_fix = bool(enabled)
+
     def set_depth(self, depth) -> None:
         """外部每收到一帧深度图调用一次。"""
         if depth is None:
@@ -652,6 +673,10 @@ class Depth3DWidget(QLabel):
             raw = np.asarray(depth)
             if raw.ndim != 2 or raw.size == 0:
                 return
+            # GF515 系列传感器输出朝向修正（ABCD -> CBAD 的镜像还原），与 2D 视图
+            # 保持一致；是否启用由 set_orientation_fix 根据 SN 决定。
+            if self._orient_fix:
+                raw = _fix_orientation(raw)
             # 轻量帧里 merged 会重复携带同一帧深度对象；用采样指纹去重，
             # 同时能识别 SDK 复用同一块缓冲区并就地改写的情况。
             sample = raw[::16, ::16]

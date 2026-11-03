@@ -66,6 +66,13 @@ class SensorRowWidget(QFrame):
         # 原图
         self.depth_view_2D = ImageLabel()
         raw_tile = self._tile("warp image", self.depth_view_2D)
+
+        # GF515 系列传感器输出图像朝向相反（ABCD -> CBAD），按 SN 前缀启用修正，
+        # 使 2D 原图、3D 深度曲面与点云位移都还原到正确朝向；其它型号不受影响。
+        orient_fix = self.sn.upper().startswith("GF515")
+        self.depth_view_2D.set_orientation_fix(orient_fix)
+        self.depth_view.set_orientation_fix(orient_fix)
+        self.marker_view.set_orientation_fix(orient_fix)
         # 折线图（三根独立，竖排一列）：随行高伸缩
         self.force_plots = ForcePlots()
         for p in (self.force_plots.fx_plot, self.force_plots.fy_plot, self.force_plots.fz_plot):

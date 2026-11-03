@@ -171,6 +171,20 @@ def _to_nx3(value) -> np.ndarray | None:
     return arr if arr.shape[0] else None
 
 
+def _fix_orientation_points(arr: np.ndarray) -> np.ndarray:
+    """GF515 系列传感器点云朝向修正（与图像 / 深度图的副对角线镜像一致）。
+
+    图像 / 深度图做的是 ``(r, c) -> (N-1-c, N-1-r)``（先转置再旋 180°）。
+    对应到标记点云的 (x, y) 网格坐标（x 随列、y 随行），等效为把每个点
+    ``(x, y)`` 变换为 ``(-y, -x)``，z（深度方向）保持不变以保留深度含义。
+    这样点云平面与修正后的 2D 原图 / 3D 深度曲面朝向一致。
+    """
+    out = np.array(arr, dtype=np.float64, copy=True)
+    out[:, 0] = -arr[:, 1]
+    out[:, 1] = -arr[:, 0]
+    return out
+
+
 class PointCloudWidget(QWidget):
     """点云 + 位移箭头显示控件（接口与 ImageLabel / Depth3DWidget 对齐）。"""
 
@@ -184,6 +198,7 @@ class PointCloudWidget(QWidget):
         self._current: np.ndarray | None = None
         self._delta_xyz: np.ndarray | None = None
         self._loading = False
+        self._orient_fix = False
 
         self._azimuth = _DEFAULT_AZIMUTH
         self._elevation = _DEFAULT_ELEVATION
@@ -205,6 +220,13 @@ class PointCloudWidget(QWidget):
         return QSize(120, 90)
 
     # ------------------------------------------------------------ public API
+    def set_orientation_fix(self, enabled: bool) -> None:
+        """是否启用 GF515 系列传感器的点云朝向修正（与图像 / 深度图一致）。
+
+        由上层根据传感器 SN 是否以 ``GF515`` 开头来调用。
+        """
+        self._orient_fix = bool(enabled)
+
     def set_points(self, origin, current, delta_xyz) -> None:
         """每收到一帧 marker 数据调用一次。
 
@@ -225,12 +247,20 @@ class PointCloudWidget(QWidget):
         if cur is None or org is None:
             return
 
+        # GF515 系列传感器输出朝向相反，按 SN 启用点云平面镜像 (x,y)->(-y,-x)，
+        # 与 2D 原图 / 3D 深度曲面的修正保持一致。
+        if self._orient_fix:
+            org = _fix_orientation_points(org)
+            cur = _fix_orientation_points(cur)
+
         n = min(org.shape[0], cur.shape[0])
         # 强制拷贝：SDK 可能复用同一块缓冲区，避免绘制前被下一帧改写。
         self._origin = np.array(org[:n], copy=True)
         self._current = np.array(cur[:n], copy=True)
         dlt = _to_nx3(delta_xyz)
         if dlt is not None and dlt.shape[0] > 0:
+            if self._orient_fix:
+                dlt = _fix_orientation_points(dlt)
             self._delta_xyz = np.array(dlt[: min(dlt.shape[0], n)], copy=True)
         else:
             self._delta_xyz = None
