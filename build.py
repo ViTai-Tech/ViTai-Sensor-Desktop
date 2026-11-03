@@ -174,7 +174,7 @@ def get_build_info() -> str:
 
 
 def get_window_title(
-    base_title: str = "ViTai 视触觉传感器查看器",
+    base_title: str = "视触觉传感器查看器",
 ) -> str:
     """Return the application window title with version information."""
     return f"{{base_title}} | Version: {{APP_VERSION}}"

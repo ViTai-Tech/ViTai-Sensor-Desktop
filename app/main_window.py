@@ -22,7 +22,7 @@ class MainWindow(QMainWindow):
 
         # 原生系统窗口标题
         self.setWindowTitle(
-            f"ViTai 视触觉传感器查看器 | Version: {APP_VERSION}"
+            f"视触觉传感器查看器 | Version: {APP_VERSION}"
         )
 
         self.setMinimumSize(1100, 700)
@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
 
         # 中间：应用标题
         self.title_label = QLabel(
-            "ViTai 视触觉传感器查看器"
+            "视触觉传感器查看器"
         )
         self.title_label.setAlignment(
             Qt.AlignmentFlag.AlignCenter
