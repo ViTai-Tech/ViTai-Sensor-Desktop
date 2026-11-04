@@ -68,25 +68,37 @@ BC_20260529_mini/
 
 ## Project Structure
 
-```
-sensor-desktop-app/
-├── main.py                 # 程序入口
-├── build.py                # 一键打包脚本（安装 SDK + 依赖 + PyInstaller 打包）
-├── requirements.txt        # Python 依赖
-├── ViTaiViewer.spec        # PyInstaller 打包配置
+```text
+ViTai-Sensor-Desktop/
+├── main.py                     # 程序入口
+├── build.py                    # 选择并安装 SDK、生成构建信息、调用 PyInstaller 打包
+├── requirements.txt            # Python 依赖（含 PyInstaller）
+├── ViTaiViewer.spec            # 构建生成的 PyInstaller 配置
 ├── app/
-    ├── build_info.py       # 自动生成构建信息
-│   ├── main_window.py      # 主窗口（UI 布局 + 信号连接 + 生命周期）
-│   ├── sensor_worker.py    # 传感器采集工作线程
+│   ├── __init__.py
+│   ├── build_info.py           # 自动生成的版本、分支及所选 SDK 信息
+│   ├── sdk.py                  # SDK 适配层，统一 pyvitaisdk / bcvts_gel 导入
+│   ├── main_window.py          # 主窗口、信号连接及采集生命周期
+│   ├── sensor_worker.py        # 传感器采集线程及力模型加载
 │   └── widgets/
-│       ├── device_panel.py   # 顶部设备控制栏
-│       ├── image_viewer.py   # 左侧图像显示区
-│       └── data_panel.py     # 右侧数据面板（力曲线 + 滑动状态）
-├── wheels/
-│   ├── linux/              # Linux SDK wheel
-│   └── windows/            # Windows SDK wheel
-└── image.png               # 截图
+│       ├── __init__.py
+│       ├── device_panel.py     # 设备控制、权重目录选择及配置保存
+│       ├── checkable_combo.py  # 支持多选的设备下拉框
+│       ├── multi_sensor_viewer.py # 多传感器图像布局
+│       ├── image_viewer.py     # 单传感器图像显示
+│       └── data_panel.py       # 力数据曲线及滑动状态
+├── wheel/                      # SDK 安装包，每个平台只保留一个待构建的 wheel
+│                               # 支持 pyvitaisdk-*、pyvitaisdk4bc-*、bcvts_gel-*
+├── build/                      # PyInstaller 构建中间文件（构建时生成）
+├── dist/                       # 打包输出目录（构建时生成）
+│   ├── ViTaiViewer.exe         # Windows 可执行程序；Linux 输出为 ViTaiViewer
+│   └── settings.json           # exe 运行并保存设置时生成，记录权重目录
+├── README.md                   # 中文说明
+├── README_en.md                # 英文说明
+└── image.png                   # 界面截图
 ```
+
+源码运行时，`settings.json` 保存在项目根目录；打包后运行时，保存在可执行文件同目录。力模型放在用户选择的外部权重目录中。
 
 ## Troubleshooting
 
