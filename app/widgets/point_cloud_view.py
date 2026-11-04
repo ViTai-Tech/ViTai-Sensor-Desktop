@@ -10,6 +10,9 @@
   （与原 JS 的 PointCloudRenderer 逻辑一致：有箭头时隐藏当前粒子）；
 - 视图采用「正交旋转 + 透视除法」的相机模型：缩放系数只按「默认朝向」的投影
   包围盒计算并固定下来，因此无论数据是 20×20×3 还是 20×10×3 都能铺满外框；
+  取景以该参考包围盒的中点为对齐基准（而不是原点），因为透视下近处（屏幕下方）
+  的点被放得更大、视觉重心偏低，直接用原点居中会让整团点云偏下；画布留白也随
+  外框尺寸自适应，小外框里不会被固定的留白挤压；
   透视相机到点云中心的距离随点阵真实尺度固定，旋转时不改变整体取景。翻转时
   近处的点更大、间距更开，远处的点更小、更收拢，整体呈梯形（近大远小），
   而不是所有间隙一起等比缩小。
@@ -57,7 +60,10 @@ _DEFAULT_AZIMUTH = 0.0
 _DEFAULT_ELEVATION = math.radians(25.0)
 
 # 画布留白（像素），保证最外侧的点 / 箭头不会被边框裁掉。
+# 这是「外框较大时」的留白上限；外框变小时按短边比例收缩到 _MIN_MARGIN，
+# 否则固定的 16px 会吃掉小外框近一半的高度，点云被挤得又小又贴边。
 _MARGIN = 16.0
+_MIN_MARGIN = 8.0
 
 # 是否渲染箭头的「最小位移」阈值（占参考网格对角 _REF_EXTENT 的比例）：
 # 与颜色同理，必须用「画出来的那支箭的真实 3D 长度」判断，而不是屏幕投影长度。
@@ -383,7 +389,20 @@ class PointCloudWidget(QWidget):
         f = cam_dist / denom
         return u * f, v * f, w, f
 
-    def _fit_scale(self, rect: QRectF, u_all: np.ndarray, v_all: np.ndarray) -> float:
+    @staticmethod
+    def _fit_margin(rect: QRectF) -> float:
+        """画布留白：随外框尺寸自适应。
+
+        外框较大时用固定 ``_MARGIN``（避免最外侧的点 / 箭头蹭到边框）；外框较小
+        时按短边比例收缩到 ``_MIN_MARGIN``，让点云在小外框里也能尽量铺满，而不是
+        被一圈固定的 16px 留白挤到中间偏下。
+        """
+        short_side = min(rect.width(), rect.height())
+        return float(min(_MARGIN, max(_MIN_MARGIN, short_side * 0.05)))
+
+    def _fit_scale(
+        self, rect: QRectF, u_all: np.ndarray, v_all: np.ndarray, margin: float
+    ) -> float:
         """按给定投影包围盒算出「刚好铺满控件」的缩放系数。
 
         注意：这里只用**固定参考朝向**的包围盒来算，不能每帧用当前朝向算。
@@ -396,8 +415,8 @@ class PointCloudWidget(QWidget):
         span_u = max(u_max - u_min, 1e-9)
         span_v = max(v_max - v_min, 1e-9)
 
-        avail_w = max(1.0, rect.width() - 2.0 * _MARGIN)
-        avail_h = max(1.0, rect.height() - 2.0 * _MARGIN)
+        avail_w = max(1.0, rect.width() - 2.0 * margin)
+        avail_h = max(1.0, rect.height() - 2.0 * margin)
         return min(avail_w / span_u, avail_h / span_v) * self._zoom
 
     # ------------------------------------------------------------ 绘制
@@ -474,11 +493,21 @@ class PointCloudWidget(QWidget):
         ru_o, rv_o, _, _ = self._project_perspective(
             disp_o, base_o, 0.0, _DEFAULT_ELEVATION, cam_dist
         )
-        scale = self._fit_scale(rect, ru_o, rv_o)
+        margin = self._fit_margin(rect)
+        scale = self._fit_scale(rect, ru_o, rv_o, margin)
 
-        # 投影前已减去 3D 包围盒中心，投影面中点即为 0；右键平移按屏幕像素叠加。
-        cx = rect.center().x() + self._pan_x
-        cy = rect.center().y() + self._pan_y
+        # 居中补偿：透视是「近大远小」，而默认相机在点云上方 25°，屏幕下方（更靠近
+        # 相机）的点被放大得更多，投影包围盒并不以原点（点云几何中心）对称 ——
+        # 视觉重心比原点更低。若仍把原点摆在外框正中心，整团点云就会整体偏下，
+        # 外框越小时留白越窄，偏下越明显。
+        # 这里改用「参考投影包围盒的中点」对齐外框中心，让点云在视觉上居中；
+        # 与缩放系数一样只按默认朝向算，旋转时取景稳定不漂移。
+        ref_u_mid = 0.5 * (float(ru_o.min()) + float(ru_o.max()))
+        ref_v_mid = 0.5 * (float(rv_o.min()) + float(rv_o.max()))
+
+        # 右键平移按屏幕像素叠加在居中结果上。
+        cx = rect.center().x() + self._pan_x - ref_u_mid * scale
+        cy = rect.center().y() + self._pan_y - ref_v_mid * scale
 
         def sx(u):
             return cx + u * scale

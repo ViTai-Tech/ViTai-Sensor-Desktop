@@ -12,7 +12,9 @@
 - 如果离屏 GL 创建失败，自动退化为 2D 深度色图，保证不会一片空白。
 
 渲染参数与 test_depth.py 保持一致（同样的色带、双面光照），取景按曲面在视口内的
-投影包围盒做 contain 适配（宽、高两方向取较紧的一边铺满），与 point_cloud_view 一致。
+投影包围盒做 contain 适配（宽、高两方向取较紧的一边铺满），与 point_cloud_view 一致；
+并用离轴投影（lens shift）把投影包围盒的中点对齐画面中心 —— 透视下近处（屏幕下方）
+的顶点被放大得更多、包围盒并不对称，不补偿的话曲面会整体偏下、上方留黑边。
 """
 
 from __future__ import annotations
@@ -189,11 +191,22 @@ def _normalize(v: np.ndarray) -> np.ndarray:
     return v / n if n > 1e-9 else v
 
 
-def _perspective(fovy_deg: float, aspect: float, near: float, far: float) -> np.ndarray:
+def _perspective(
+    fovy_deg: float,
+    aspect: float,
+    near: float,
+    far: float,
+    ndc_shift: tuple[float, float] = (0.0, 0.0),
+) -> np.ndarray:
     f = 1.0 / math.tan(math.radians(fovy_deg) * 0.5)
     m = np.zeros((4, 4), dtype=np.float64)
     m[0, 0] = f / max(aspect, 1e-6)
     m[1, 1] = f
+    # 离轴（lens shift）平移：给裁剪空间加一个与 w 成正比的偏移，等价于把画面
+    # 在 NDC 上整体平移 ``-ndc_shift``（相机朝向 / 位置都不变）。用于把透视下
+    # 并不对称的投影包围盒居中，见 ``Depth3DWidget._fit_center_shift``。
+    m[0, 2] = float(ndc_shift[0])
+    m[1, 2] = float(ndc_shift[1])
     m[2, 2] = (far + near) / (near - far)
     m[2, 3] = (2.0 * far * near) / (near - far)
     m[3, 2] = -1.0
@@ -264,10 +277,12 @@ class OrbitCamera:
     def up(self) -> np.ndarray:
         return self._rotation() @ self._UP_0
 
-    def view_projection(self, aspect: float) -> np.ndarray:
+    def view_projection(
+        self, aspect: float, ndc_shift: tuple[float, float] = (0.0, 0.0)
+    ) -> np.ndarray:
         # up 由同一个旋转矩阵得到，始终与视线正交，因此任何倾斜角下都不会退化。
         view = _look_at(self.eye(), self.target, self.up())
-        proj = _perspective(self.fov, aspect, self.near, self.far)
+        proj = _perspective(self.fov, aspect, self.near, self.far, ndc_shift)
         return proj @ view
 
     def tilt(self, ddx: float, ddy: float) -> None:
@@ -396,7 +411,8 @@ _DEFAULT_TILT_X = math.radians(25.0)
 _DEFAULT_TILT_Z = 0.0
 
 # 相机取景留白系数：1.0 时曲面刚好铺满外框（宽、高两方向中较紧的一边），不留黑边。
-_FIT_MARGIN = 1.0
+# 略微大于 1 留一点点呼吸空间，避免曲面边缘（尤其圆角处）与边框重合 / 被切掉。
+_FIT_MARGIN = 1.04
 
 class DepthScene:
     """把深度网格数据上传到 GPU 并负责绘制（与 Qt 无关）。"""
@@ -805,6 +821,29 @@ class Depth3DWidget(QLabel):
         d_h = float(np.max(np.abs(self._fit_yv) / tan_v + self._fit_along))
         return max(d_w, d_h, 1e-6) * _FIT_MARGIN
 
+    def _fit_center_shift(self, aspect: float, distance: float):
+        """默认朝向下，投影包围盒中点相对视口中心的 NDC 偏移，用于离轴居中。
+
+        ``_fit_distance`` 只保证曲面「装得下」：它按各点自身的深度反解所需相机
+        距离，而透视是「近大远小」—— 默认 25° 俯视时靠近相机的一侧（屏幕下方）
+        被放大得更多，投影包围盒并不以旋转中心对称。若不平移，曲面就会整体偏下：
+        上边留出一条黑边、下边贴边。
+        这里算出包围盒中点（NDC）并把裁剪空间平移 ``-中点``（见 ``_perspective``
+        的 ``ndc_shift``），让曲面在框内视觉居中；缩放与居中都以默认朝向为准，
+        旋转时取景稳定不漂移。
+        """
+        if self._fit_xv is None:
+            return 0.0, 0.0
+        vfov = math.radians(self.camera.fov)
+        tan_v = max(math.tan(vfov * 0.5), 1e-6)
+        # 透视除法分母 = 相机到该点的深度，必须为正；下限兜底避免除零。
+        depth = np.maximum(distance - self._fit_along, 1e-6)
+        ndc_x = (self._fit_xv / max(aspect, 1e-6)) / (depth * tan_v)
+        ndc_y = self._fit_yv / (depth * tan_v)
+        mid_x = 0.5 * (float(ndc_x.max()) + float(ndc_x.min()))
+        mid_y = 0.5 * (float(ndc_y.max()) + float(ndc_y.min()))
+        return mid_x, mid_y
+
     def _render_now(self) -> None:
         if self._depth is None:
             return
@@ -848,7 +887,10 @@ class Depth3DWidget(QLabel):
 
             aspect = rw / float(rh)
             self.camera.distance = self._fit_distance(aspect) * self._zoom
-            mvp = self.camera.view_projection(aspect)
+            # 透视下投影包围盒不以旋转中心对称（近处被放大），用离轴平移把它摆正，
+            # 否则曲面会整体偏下、上方留黑边。
+            ndc_shift = self._fit_center_shift(aspect, self.camera.distance)
+            mvp = self.camera.view_projection(aspect, ndc_shift)
             self._scene.render(
                 mvp, self.camera.eye(), self.height_scale,
                 show_surface=True, show_wire=True, show_points=False,
