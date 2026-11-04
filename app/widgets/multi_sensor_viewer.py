@@ -8,11 +8,11 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QScrollBar,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 
 from app.widgets.image_viewer import ImageLabel
-from app.widgets.depth_3d_view import Depth3DWidget
+from app.widgets.depth_3d_view import Depth3DWidget, DepthViewWidget
 from app.widgets.point_cloud_view import PointCloudWidget
 from app.widgets.data_panel import ForcePlots
 from pyvitaisdk import VTSDataType
@@ -28,17 +28,10 @@ class SensorRowWidget(QFrame):
         self._setup_ui()
 
     def _setup_ui(self):
-        # 整体行：右侧数据列顶部放小号滑动状态，其余为名称 + 图像 + 波形
+        # 整体行：名称列 tag 下方放帧率与滑动状态，其余为名称 + 图像 + 波形
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 8, 10, 8)
         v.setSpacing(4)
-
-        # 滑动状态放在右侧数据列顶部，不再叠加在图像瓦片上，
-        # 从而让瓦片上下边距一致。
-        self.slip_label = QLabel("● --")
-        self.slip_label.setFont(QFont("", 9, QFont.Weight.Bold))
-        self.slip_label.setStyleSheet("color: #34d399;")
-        self.slip_label.setContentsMargins(0, 0, 4, 0)
 
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
@@ -74,6 +67,23 @@ class SensorRowWidget(QFrame):
         )
         name_l.addWidget(tag)
 
+        # 帧率：放在 tag 下方，与每个传感器一一对应
+        self.fps_label = QLabel("帧率: --")
+        self.fps_label.setFixedWidth(100)
+        self.fps_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fps_label.setFont(QFont("", 9))
+        self.fps_label.setStyleSheet("color: #94a3b8;")
+        name_l.addWidget(self.fps_label)
+
+        # 滑动状态：放在 tag 下方（帧率之下）
+        self.slip_label = QLabel("● --")
+        self.slip_label.setFixedWidth(120)
+        self.slip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.slip_label.setFont(QFont("", 8, QFont.Weight.Bold))
+        self.slip_label.setStyleSheet("color: #34d399;")
+        self.slip_label.setContentsMargins(0, 0, 4, 0)
+        name_l.addWidget(self.slip_label)
+
         h.addWidget(name_col)
 
 
@@ -81,37 +91,38 @@ class SensorRowWidget(QFrame):
 
         # 标记点云 + 位移箭头
         self.marker_view = PointCloudWidget()
-        marker_tile = self._tile("点云位移", self.marker_view)
+        marker_tile = self._tile("点云图", self.marker_view)
 
-        # 深度图（3D 高程曲面）
-        self.depth_view = Depth3DWidget()
-        depth_tile = self._tile("深度图 3D", self.depth_view)
+        # 深度图：默认 2D 色图，表头可点击切换为 3D 高程曲面
+        self.depth_view = DepthViewWidget()
+        depth_tile = self._tile("深度图", self.depth_view)
 
-        # 原图
-        self.depth_view_2D = ImageLabel()
-        raw_tile = self._tile("warp image", self.depth_view_2D)
+          # 原图 + Fx/Fy/Fz（叠加在原图左上角）
+        self.raw_view = ImageLabel()
+
+        raw_tile = self._tile("原图", self.raw_view)
+
+
+        # # 原图
+        # self.depth_view_2D = ImageLabel()
+        # raw_tile = self._tile("warp image", self.depth_view_2D)
 
         # GF515 系列传感器输出图像朝向相反（ABCD -> CBAD），按 SN 前缀启用修正，
         # 使 2D 原图、3D 深度曲面与点云位移都还原到正确朝向；其它型号不受影响。
-        orient_fix = self.sn.upper().startswith("GF515")
-        self.depth_view_2D.set_orientation_fix(orient_fix)
-        self.depth_view.set_orientation_fix(orient_fix)
-        self.marker_view.set_orientation_fix(orient_fix)
+        # orient_fix = self.sn.upper().startswith("GF515")
+        # self.depth_view_2D.set_orientation_fix(orient_fix)
+        # self.depth_view.set_orientation_fix(orient_fix)
+        # self.marker_view.set_orientation_fix(orient_fix)
         # 折线图（三根独立，竖排一列）：随行高伸缩
         self.force_plots = ForcePlots()
         for p in (self.force_plots.fx_plot, self.force_plots.fy_plot, self.force_plots.fz_plot):
             p.setMinimumHeight(40)
 
-        # 右侧数据列：顶部放滑动状态，下方为力折线图
+        # 右侧数据列：仅放力折线图（滑动状态已移至名称列 tag 下方）
         right_col = QWidget()
         rc_l = QVBoxLayout(right_col)
         rc_l.setContentsMargins(0, 0, 0, 0)
         rc_l.setSpacing(4)
-        slip_row = QHBoxLayout()
-        slip_row.setContentsMargins(0, 0, 0, 0)
-        slip_row.addStretch(1)
-        slip_row.addWidget(self.slip_label)
-        rc_l.addLayout(slip_row)
         rc_l.addWidget(self.force_plots, 1)
 
         h.addWidget(raw_tile, 3)
@@ -149,13 +160,17 @@ class SensorRowWidget(QFrame):
         return w
 
     def set_loading(self, loading):
-        for view in (self.depth_view_2D, self.depth_view, self.marker_view):
+        for view in (self.raw_view, self.depth_view, self.marker_view):
             view.set_loading(loading)
+
+    def set_depth_mode(self, mode):
+        """切换深度图显示模式（"2d" / "3d"）。"""
+        self.depth_view.set_mode(mode)
 
     def update_data(self, data):
         # print("UPDATE_DATA", data)
         if VTSDataType.WARPED_IMG in data:
-            self.depth_view_2D.set_image(data[VTSDataType.DEPTH_MAP])
+            self.raw_view.set_image(data[VTSDataType.WARPED_IMG])
         if VTSDataType.DEPTH_MAP in data:
             self.depth_view.set_depth(data[VTSDataType.DEPTH_MAP])
         if (
@@ -201,6 +216,12 @@ class SensorRowWidget(QFrame):
             self.slip_label.setStyleSheet("color: #34d399;")
         self.slip_label.setText(f"● {name}")
 
+    def set_fps(self, fps):
+        if fps is None:
+            self.fps_label.setText("帧率: --")
+        else:
+            self.fps_label.setText(f"帧率: {fps:.1f}")
+
     def release_resources(self):
         depth_view = getattr(self, "depth_view", None)
         if depth_view is not None and hasattr(depth_view, "release_resources"):
@@ -210,6 +231,21 @@ class SensorRowWidget(QFrame):
 def _chunk(seq, n):
     """把序列切成若干长度不超过 n 的小块。"""
     return [seq[i:i + n] for i in range(0, len(seq), n)]
+
+
+class _ClickableHeaderCell(QLabel):
+    """可点击的表头单元格（用于深度图 2D/3D 切换）。"""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("clickable", True)
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
 
 
 class MultiSensorViewer(QWidget):
@@ -225,6 +261,8 @@ class MultiSensorViewer(QWidget):
         )
         self._rows = {}   # sn -> SensorRowWidget
         self._sns = []    # 当前传感器序列号（有序，用于分页）
+        self._depth_3d = False  # 深度图显示模式：False=2D（默认），True=3D
+        self._depth_header = None  # 深度图表头单元格（可点击切换）
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -251,7 +289,10 @@ class MultiSensorViewer(QWidget):
         outer.addLayout(body)
 
     def _build_header(self):
-        """表头：列宽与下方 SensorRowWidget 的列保持一致。"""
+        """表头：列宽与下方 SensorRowWidget 的列保持一致。
+
+        深度图表头为可点击单元格，点击在 2D / 3D 之间切换（默认 2D）。
+        """
         header = QFrame()
         header.setObjectName("TableHeader")
         h = QHBoxLayout(header)
@@ -265,18 +306,49 @@ class MultiSensorViewer(QWidget):
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.addWidget(name)
 
+        # 前两列固定表头
         for title, stretch in (
             ("warp image", 3),
             ("点云位移", 3),
-            ("深度图 3D", 3),
-            ("力  Fx / Fy / Fz", 4),
         ):
             lab = QLabel(title)
             lab.setObjectName("TableHeaderCell")
             lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
             h.addWidget(lab, stretch)
 
+        # 深度图表头：可点击切换 2D / 3D
+        self._depth_header = _ClickableHeaderCell("深度图 2D")
+        self._depth_header.setObjectName("TableHeaderCell")
+        self._depth_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._depth_header.clicked.connect(self._toggle_depth_mode)
+        h.addWidget(self._depth_header, 3)
+
+        # 最后一列：力
+        lab = QLabel("力  Fx / Fy / Fz")
+        lab.setObjectName("TableHeaderCell")
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.addWidget(lab, 4)
+
+        self._sync_depth_header()
         return header
+
+    def _toggle_depth_mode(self):
+        """切换所有深度图（含后续新增行）的 2D / 3D 显示模式。"""
+        self._depth_3d = not self._depth_3d
+        mode = "3d" if self._depth_3d else "2d"
+        self._sync_depth_header()
+        for row in self._rows.values():
+            row.set_depth_mode(mode)
+
+    def _sync_depth_header(self):
+        """同步深度图表头文案与高亮（反映当前 2D/3D 状态）。"""
+        if self._depth_header is None:
+            return
+        self._depth_header.setText("深度图 3D" if self._depth_3d else "深度图 2D")
+        self._depth_header.setProperty("active", self._depth_3d)
+        # 触发样式刷新
+        self._depth_header.style().unpolish(self._depth_header)
+        self._depth_header.style().polish(self._depth_header)
 
     def wheelEvent(self, ev):
         # 滚轮翻页：下滑下一页，上滑上一页
@@ -328,10 +400,20 @@ class MultiSensorViewer(QWidget):
         self._scroll.setVisible(n > 1)
         self._scroll.setValue(0)
 
+        # 新建的行需继承当前深度图 2D/3D 显示模式
+        mode = "3d" if self._depth_3d else "2d"
+        for row in self._rows.values():
+            row.set_depth_mode(mode)
+
     def update_data(self, sn, data):
         row = self._rows.get(sn)
         if row is not None:
             row.update_data(data)
+
+    def set_fps(self, sn, fps):
+        row = self._rows.get(sn)
+        if row is not None:
+            row.set_fps(fps)
 
     def set_loading(self, sns, loading):
         for sn in sns:

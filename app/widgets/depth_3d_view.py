@@ -32,7 +32,9 @@ from PyQt6.QtGui import (
     QPixmap,
     QSurfaceFormat,
 )
-from PyQt6.QtWidgets import QLabel, QSizePolicy
+from PyQt6.QtWidgets import QLabel, QSizePolicy, QStackedWidget
+
+from app.widgets.image_viewer import ImageLabel
 
 
 # --------------------------------------------------------------------- 朝向修正
@@ -49,32 +51,136 @@ def _fix_orientation(arr: np.ndarray) -> np.ndarray:
 
 
 # --------------------------------------------------------------------- 颜色 / 几何
-# 深度色带：深蓝 -> 蓝 -> 青 -> 绿 -> 黄绿 -> 暖黄 -> 近白
-_STOPS = np.array(
-    [
-        [0.07, 0.10, 0.24],
-        [0.05, 0.18, 0.42],
-        [0.05, 0.44, 0.53],
-        [0.18, 0.68, 0.46],
-        [0.60, 0.84, 0.29],
-        [0.97, 0.90, 0.36],
-        [1.00, 1.00, 0.92],
-    ],
-    dtype=np.float64,
-)
+# 深度色带预设：每个都是若干 (r, g, b) 停靠点（0~1），低值 -> 高值线性插值。
+# 切换色带只需改 COLORMAP_NAME（或运行时调用 set_colormap）。
+COLORMAPS: dict[str, np.ndarray] = {
+    # 深海（当前默认）：深蓝 -> 蓝 -> 青 -> 绿 -> 黄绿 -> 暖黄 -> 近白
+    "deep_ocean": np.array(
+        [
+            [0.07, 0.10, 0.24],
+            [0.05, 0.18, 0.42],
+            [0.05, 0.44, 0.53],
+            [0.18, 0.68, 0.46],
+            [0.60, 0.84, 0.29],
+            [0.97, 0.90, 0.36],
+            [1.00, 1.00, 0.92],
+        ],
+        dtype=np.float64,
+    ),
+    # 冰蓝（单色系）：深海军蓝 -> 钢蓝 -> 天蓝 -> 冰白，低对比环境更干净
+    "ice": np.array(
+        [
+            [0.02, 0.06, 0.20],
+            [0.04, 0.16, 0.38],
+            [0.07, 0.32, 0.58],
+            [0.22, 0.55, 0.78],
+            [0.52, 0.78, 0.92],
+            [0.85, 0.96, 1.00],
+        ],
+        dtype=np.float64,
+    ),
+    # viridis：感知均匀，深紫 -> 蓝 -> 绿 -> 黄，学术/科研风格
+    "viridis": np.array(
+        [
+            [0.267, 0.005, 0.329],
+            [0.128, 0.230, 0.441],
+            [0.127, 0.567, 0.551],
+            [0.369, 0.789, 0.383],
+            [0.713, 0.871, 0.275],
+            [0.993, 0.906, 0.144],
+        ],
+        dtype=np.float64,
+    ),
+    # turbo：jet 的改进版，高饱和，层次最丰富，适合看细节起伏
+    "turbo": np.array(
+        [
+            [0.19, 0.07, 0.23],
+            [0.16, 0.33, 0.79],
+            [0.09, 0.66, 0.64],
+            [0.19, 0.86, 0.30],
+            [0.75, 0.89, 0.10],
+            [0.98, 0.65, 0.09],
+            [0.75, 0.13, 0.07],
+        ],
+        dtype=np.float64,
+    ),
+    # magma：黑 -> 紫 -> 橙 -> 亮黄，暗色 UI 下很搭，起点接近背景色
+    "magma": np.array(
+        [
+            [0.001, 0.000, 0.014],
+            [0.155, 0.075, 0.419],
+            [0.418, 0.179, 0.541],
+            [0.678, 0.270, 0.459],
+            [0.905, 0.481, 0.320],
+            [0.987, 0.766, 0.459],
+            [0.987, 0.991, 0.750],
+        ],
+        dtype=np.float64,
+    ),
+    # 热力：黑 -> 暗红 -> 橙红 -> 黄 -> 白，工业热像仪风格
+    "hot": np.array(
+        [
+            [0.01, 0.00, 0.00],
+            [0.32, 0.02, 0.02],
+            [0.70, 0.05, 0.03],
+            [1.00, 0.45, 0.05],
+            [1.00, 0.88, 0.20],
+            [1.00, 1.00, 1.00],
+        ],
+        dtype=np.float64,
+    ),
+    # 极光：深蓝紫 -> 青 -> 荧光绿 -> 亮黄绿，科技感强
+    "aurora": np.array(
+        [
+            [0.03, 0.02, 0.18],
+            [0.10, 0.10, 0.45],
+            [0.10, 0.40, 0.62],
+            [0.05, 0.66, 0.60],
+            [0.35, 0.85, 0.36],
+            [0.80, 0.96, 0.36],
+            [0.98, 1.00, 0.80],
+        ],
+        dtype=np.float64,
+    ),
+    # inferno：近黑 -> 深紫 -> 紫红 -> 橙红 -> 亮黄，感知均匀、暗色 UI 下对比强烈
+    "inferno": np.array(
+        [
+            [0.001, 0.000, 0.014],
+            [0.156, 0.052, 0.325],
+            [0.376, 0.087, 0.435],
+            [0.611, 0.175, 0.405],
+            [0.835, 0.330, 0.282],
+            [0.973, 0.583, 0.111],
+            [0.988, 0.998, 0.645],
+        ],
+        dtype=np.float64,
+    ),
+}
+
+# 当前使用的色带名（COLORMAPS 的 key）
+COLORMAP_NAME = "deep_ocean"
 
 
 # 低值拉伸系数：<1 时小高度会铺满更大范围的色带，低洼处也能看到更丰富的蓝绿层次。
 DEPTH_COLOR_GAMMA = 0.4
 
 
-def depth_colormap(t: np.ndarray) -> np.ndarray:
-    """把 0..1 的深度值映射为 RGB 浮点颜色 (N,3)。"""
-    seg = len(_STOPS) - 1
+def set_colormap(name: str) -> None:
+    """切换全局深度色带（必须在每帧着色前生效，会影响 3D 曲面颜色）。"""
+    global COLORMAP_NAME
+    if name not in COLORMAPS:
+        raise KeyError(f"未知色带 {name!r}，可选: {', '.join(COLORMAPS)}")
+    COLORMAP_NAME = name
+
+
+def depth_colormap(t: np.ndarray, name: str | None = None) -> np.ndarray:
+    """把 0..1 的深度值映射为 RGB 浮点颜色 (N,3)。``name`` 缺省用全局色带。"""
+    stops = COLORMAPS[name] if name is not None else COLORMAPS[COLORMAP_NAME]
+    seg = len(stops) - 1
     x = (np.clip(t, 0.0, 1.0) ** DEPTH_COLOR_GAMMA) * seg
     lo = np.clip(x.astype(np.int64), 0, seg - 1)
     frac = (x - lo)[..., None]
-    rgb = _STOPS[lo] * (1.0 - frac) + _STOPS[lo + 1] * frac
+    rgb = stops[lo] * (1.0 - frac) + stops[lo + 1] * frac
     return rgb.astype("f4")
 
 
@@ -412,7 +518,7 @@ _DEFAULT_TILT_Z = 0.0
 
 # 相机取景留白系数：1.0 时曲面刚好铺满外框（宽、高两方向中较紧的一边），不留黑边。
 # 略微大于 1 留一点点呼吸空间，避免曲面边缘（尤其圆角处）与边框重合 / 被切掉。
-_FIT_MARGIN = 1.04
+_FIT_MARGIN = 1.0
 
 class DepthScene:
     """把深度网格数据上传到 GPU 并负责绘制（与 Qt 无关）。"""
@@ -810,16 +916,45 @@ class Depth3DWidget(QLabel):
             return False
 
     def _fit_distance(self, aspect: float) -> float:
+        """默认朝向下，使曲面居中后恰好装进视口（contain）的相机距离。
+
+        旧版按「每个点的绝对投影极值 ≤ 1」反解距离，但在透视下投影包围盒并不以
+        旋转中心对称（近处被放大），``_fit_center_shift`` 会把包围盒平移居中，导致
+        平移后曲面没有贴到 ±1、在上下/左右留出空白。
+
+        这里直接以「居中后的包围盒半高 ≤ 1」为约束求解最小距离：两方向分别要求
+        range/2 ≤ 1（range 为投影 NDC 跨度），取能同时满足的最小距离。被约束方向
+        将正好贴边（宽屏 -> 上下贴边、左右留白；竖屏 -> 左右贴边、上下留白），非
+        约束方向自然留有空白。
+        """
         if self._fit_xv is None:
             return 10.0
         vfov = math.radians(self.camera.fov)
         tan_v = max(math.tan(vfov * 0.5), 1e-6)
-        tan_h = max(tan_v * max(aspect, 1e-6), 1e-6)
-        # contain 适配：分别求“铺满宽度所需距离”和“铺满高度所需距离”，取较大者
-        # （等价于用两者中较小的适配比例），保证整个曲面（含高程起伏）都落在框内。
-        d_w = float(np.max(np.abs(self._fit_xv) / tan_h + self._fit_along))
-        d_h = float(np.max(np.abs(self._fit_yv) / tan_v + self._fit_along))
-        return max(d_w, d_h, 1e-6) * _FIT_MARGIN
+        xv = self._fit_xv
+        yv = self._fit_yv
+        along = self._fit_along
+
+        def ranges(d: float):
+            # 相机到各点的视线深度，必须为正；下限兜底避免除零。
+            depth = np.maximum(d - along, 1e-6)
+            ny = yv / (depth * tan_v)
+            nx = xv / (depth * tan_v * max(aspect, 1e-6))
+            # 居中包围盒（先平移到中点为 0）的跨度为 max-min，半跨 = range/2。
+            return float(ny.max() - ny.min()), float(nx.max() - nx.min())
+
+        # range 随相机距离单调递减：距离小 -> 透视放大 -> range 大（超出视口）；
+        # 距离大 -> range 小（装得下）。二分求「两方向都 ≤ 2」的最小距离，
+        # 该距离下被约束方向 range == 2（半跨 == 1，正好贴边）。
+        lo, hi = 1e-3, 1e5
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            ry, rx = ranges(mid)
+            if ry <= 2.0 and rx <= 2.0:
+                hi = mid
+            else:
+                lo = mid
+        return max(hi, 1e-6) * _FIT_MARGIN
 
     def _fit_center_shift(self, aspect: float, distance: float):
         """默认朝向下，投影包围盒中点相对视口中心的 NDC 偏移，用于离轴居中。
@@ -1058,3 +1193,59 @@ class Depth3DWidget(QLabel):
         self._zoom = float(np.clip(self._zoom * factor, 0.2, 6.0))
         self._dirty = True
         self._render_now()
+
+
+# --------------------------------------------------------------------- 2D/3D 容器
+class DepthViewWidget(QStackedWidget):
+    """深度图视图容器：默认显示 2D 深度色图，可一键切换为 3D 高程曲面。
+
+    - 对外接口与单列控件对齐（``set_depth`` / ``set_loading`` /
+      ``set_orientation_fix`` / ``release_resources``），上层无需感知内部是
+      2D 还是 3D；
+    - 2D 用 ``ImageLabel`` 渲染（与 ``ImageViewer`` 的深度图风格一致），3D 用
+      ``Depth3DWidget`` 离屏渲染；两路数据都更新，切换模式时不会丢帧；
+    - 默认 2D，``Depth3DWidget`` 只在被切到（``isVisible``）时才真正开始离屏
+      渲染，因此默认状态下不会创建 / 占用 GL 资源。
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._mode = "2d"
+        self.view_2d = ImageLabel()
+        self.view_3d = Depth3DWidget()
+        self.addWidget(self.view_2d)
+        self.addWidget(self.view_3d)
+        self.setCurrentWidget(self.view_2d)
+
+    # ----------------------------------------------------------- 模式切换
+    def set_mode(self, mode: str) -> None:
+        """切换显示模式：``"2d"`` 或 ``"3d"``（其它值按 2D 处理）。"""
+        mode = "3d" if mode == "3d" else "2d"
+        if mode == self._mode:
+            return
+        self._mode = mode
+        if mode == "3d":
+            self.setCurrentWidget(self.view_3d)
+            self.view_3d._dirty = True
+        else:
+            self.setCurrentWidget(self.view_2d)
+
+    def mode(self) -> str:
+        return self._mode
+
+    # ----------------------------------------------------------- public API
+    def set_orientation_fix(self, enabled: bool) -> None:
+        self.view_2d.set_orientation_fix(bool(enabled))
+        self.view_3d.set_orientation_fix(bool(enabled))
+
+    def set_depth(self, depth) -> None:
+        """两路都更新，保证切换模式时数据已经就绪。"""
+        self.view_3d.set_depth(depth)
+        self.view_2d.set_image(depth, is_depth=True)
+
+    def set_loading(self, loading: bool) -> None:
+        self.view_2d.set_loading(loading)
+        self.view_3d.set_loading(loading)
+
+    def release_resources(self) -> None:
+        self.view_3d.release_resources()

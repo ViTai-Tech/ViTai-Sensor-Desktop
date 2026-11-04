@@ -2,12 +2,10 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
-    QGridLayout,
     QStatusBar,
     QLabel,
     QMessageBox,
 )
-from PyQt6.QtCore import Qt
 
 from app.build_info import APP_VERSION, GIT_BRANCH, SDK_WHEEL
 from app.sensor_worker import SensorWorker
@@ -46,93 +44,6 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         # =========================================================
-        # 顶部构建信息栏
-        #
-        # 左：应用版本
-        # 中：应用名称
-        # 右：SDK wheel
-        #
-        # 三列等宽，确保中间标题相对于整个窗口真正居中。
-        # =========================================================
-        self.build_info_bar = QWidget()
-        self.build_info_bar.setObjectName("BuildInfoBar")
-        self.build_info_bar.setFixedHeight(40)
-
-        build_info_layout = QGridLayout(self.build_info_bar)
-        build_info_layout.setContentsMargins(16, 0, 16, 0)
-        build_info_layout.setHorizontalSpacing(8)
-        build_info_layout.setVerticalSpacing(0)
-
-        # 左侧：应用版本
-        self.version_label = QLabel(
-            f"Version: {APP_VERSION}"
-        )
-        self.version_label.setObjectName("VersionLabel")
-        self.version_label.setAlignment(
-            Qt.AlignmentFlag.AlignLeft
-            | Qt.AlignmentFlag.AlignVCenter
-        )
-
-        # Tooltip 中保留完整构建来源信息，方便调试。
-        self.version_label.setToolTip(
-            f"Version: {APP_VERSION}\n"
-            f"Git branch: {GIT_BRANCH}"
-        )
-
-        # 中间：应用标题
-        self.title_label = QLabel(
-            "ViTai 视触觉传感器查看器"
-        )
-        self.title_label.setObjectName("TitleLabel")
-        self.title_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-
-        # 右侧：SDK wheel
-        self.sdk_wheel_label = QLabel(
-            SDK_WHEEL
-        )
-        self.sdk_wheel_label.setObjectName("SdkWheelLabel")
-        self.sdk_wheel_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight
-            | Qt.AlignmentFlag.AlignVCenter
-        )
-        self.sdk_wheel_label.setToolTip(
-            f"SDK wheel: {SDK_WHEEL}"
-        )
-
-        # 三列布局
-        build_info_layout.addWidget(
-            self.version_label,
-            0,
-            0,
-        )
-
-        build_info_layout.addWidget(
-            self.title_label,
-            0,
-            1,
-        )
-
-        build_info_layout.addWidget(
-            self.sdk_wheel_label,
-            0,
-            2,
-        )
-
-        # 三列等宽。
-        #
-        # 即使 SDK_WHEEL 比 Version 文本长很多，
-        # 中间标题仍然保持在窗口的几何中心。
-        build_info_layout.setColumnStretch(0, 1)
-        build_info_layout.setColumnStretch(1, 1)
-        build_info_layout.setColumnStretch(2, 1)
-
-        main_layout.addWidget(
-            self.build_info_bar
-        )
-
-        # =========================================================
         # 顶部 - 设备控制栏
         # =========================================================
         self.device_panel = DevicePanel()
@@ -158,15 +69,24 @@ class MainWindow(QMainWindow):
         )
 
         self.status_label = QLabel("就绪")
-        self.fps_label = QLabel("帧率: --")
         self.ts_label = QLabel("时间戳: --")
+
+        # 构建来源信息：状态栏右侧的小字「副标题」
+        self.build_info_label = QLabel(
+            f"Git: {GIT_BRANCH} | SDK: {SDK_WHEEL}"
+        )
+        self.build_info_label.setObjectName("BuildInfoLabel")
+        self.build_info_label.setToolTip(
+            f"Git branch: {GIT_BRANCH}\n"
+            f"SDK wheel: {SDK_WHEEL}"
+        )
 
         self.status_bar.addWidget(
             self.status_label
         )
 
         self.status_bar.addPermanentWidget(
-            self.fps_label
+            self.build_info_label
         )
 
         self.status_bar.addPermanentWidget(
@@ -213,7 +133,6 @@ class MainWindow(QMainWindow):
         panel_state = None
         viewer_sns = []
         status_text = "就绪"
-        fps_text = "帧率: --"
         ts_text = "时间戳: --"
 
         if hasattr(self, "device_panel"):
@@ -226,7 +145,6 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, "status_label"):
             status_text = self.status_label.text()
-            fps_text = self.fps_label.text()
             ts_text = self.ts_label.text()
 
         reload_widget_modules()
@@ -242,7 +160,6 @@ class MainWindow(QMainWindow):
                 self.multi_viewer.set_loading(viewer_sns, False)
 
         self.status_label.setText(status_text)
-        self.fps_label.setText(fps_text)
         self.ts_label.setText(ts_text)
 
         self.status_bar.showMessage("UI 已热更新", 2000)
@@ -341,9 +258,6 @@ class MainWindow(QMainWindow):
         self.status_label.setText(
             "就绪"
         )
-        self.fps_label.setText(
-            "帧率: --"
-        )
         self.ts_label.setText(
             "时间戳: --"
         )
@@ -363,9 +277,6 @@ class MainWindow(QMainWindow):
 
         self.status_label.setText(
             "已停止"
-        )
-        self.fps_label.setText(
-            "帧率: --"
         )
         self.ts_label.setText(
             "时间戳: --"
@@ -419,15 +330,8 @@ class MainWindow(QMainWindow):
     ):
         self._fps[sn] = fps
 
-        if self._fps:
-            avg = (
-                sum(self._fps.values())
-                / len(self._fps)
-            )
-
-            self.fps_label.setText(
-                f"帧率: {avg:.1f}"
-            )
+        # 帧率显示在对应传感器行的 tag 下方（每个传感器独立）
+        self.multi_viewer.set_fps(sn, fps)
 
     def _on_worker_error(
         self,

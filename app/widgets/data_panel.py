@@ -90,7 +90,7 @@ class ForcePlots(QWidget):
 
     def _new_value_label(self, color):
         lab = QLabel("--")
-        lab.setFixedWidth(100)
+        lab.setFixedWidth(70)
         lab.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lab.setFont(QFont(_MONO_FONT, 13, QFont.Weight.Bold))
         lab.setStyleSheet(f"color: {color};")
@@ -105,7 +105,7 @@ class ForcePlots(QWidget):
         lab.setFixedWidth(20)
         lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lab.setStyleSheet(
-            f"font-weight: 700; font-size: 10px; color: {_LABEL_MUTED};"
+            f"font-weight: 700; font-size: 12px; color: {_LABEL_MUTED};"
             f"font-family: {_MONO_FONT};"
         )
         l.addWidget(lab)
@@ -128,9 +128,9 @@ class ForcePlots(QWidget):
         self.fz_curve.setData(x, arr[:, 2])
 
         # 右侧固定数值
-        self.fx_value.setText(f"{arr[-1, 0]:.6f}")
-        self.fy_value.setText(f"{arr[-1, 1]:.6f}")
-        self.fz_value.setText(f"{arr[-1, 2]:.6f}")
+        self.fx_value.setText(f"{arr[-1, 0]:.3f}")
+        self.fy_value.setText(f"{arr[-1, 1]:.3f}")
+        self.fz_value.setText(f"{arr[-1, 2]:.3f}")
 
         # 纵坐标：峰值维持到出框——以可见帧内最大绝对值为上下界，0 居中不变
         abs_arr = np.abs(arr)
