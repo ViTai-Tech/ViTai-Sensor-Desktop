@@ -86,14 +86,26 @@ _Z_SCALE = 500.0
 # 取值需 > 1 才能保证所有点都落在相机前方（分母 cam_dist - w 恒为正）。
 _PERSPECTIVE_DISTANCE = 2.2
 
-# 红色整体位移（合力）箭头的阈值：幅值（各分量的欧氏范数）低于「最短阈值」
-# 时不绘制；达到 / 超过「最长阈值」时画到最长 / 最粗；介于两者之间的幅值线性
-# 归一化到 0..1，箭头长度与粗细在最短与最长之间均匀分布。
-_DELTA_ARROW_MIN_THRESHOLD = 0.05
+# 红色整体位移（合力）箭头：归一化幅值 = 显示空间位移模长 / 场景尺度 ref_extent
+# （相对位移，与单点箭头着色同一套尺度，与绝对单位无关）。
+# 低于「最短阈值」不绘制；箭头长度随幅值分段增长、没有明显上限（可出框，体现
+# 力的大小）；粗细在「最短阈值 → 最长阈值」之间线性增长，到最长阈值后饱和。
+_DELTA_ARROW_MIN_THRESHOLD = 0.01
 _DELTA_ARROW_MAX_THRESHOLD = 0.5
+# 合力箭头最短可视长度（像素）：幅值刚超过最短阈值时的起步长度。
+_DELTA_ARROW_MIN_LEN = 24.0
+# 合力箭头长度分段增长：幅值 ≤ KNEE 时按 FAST_SCALE 快速增长，
+# 超过 KNEE 后按 SLOW_SCALE 缓慢增长（SLOW_SCALE < FAST_SCALE），
+# 既能在小位移时拉开差别、又避免大位移时箭头过长。整体仍无硬上限，可出框。
+_DELTA_ARROW_KNEE = 0.5
+_DELTA_ARROW_FAST_SCALE = 300.0
+_DELTA_ARROW_SLOW_SCALE = 80.0
+# 箭头长度整体缩放系数：在分段结果基础上再乘该值，用来整体拉长 / 缩短箭头。
+# 调大 → 整体更长（大位移时更明显）；调小 → 整体更短。
+_DELTA_ARROW_LEN_FACTOR = 2.0
 # 合力箭头的粗细范围（像素）：最短阈值时取最小值，最长阈值时取最大值。
-_DELTA_ARROW_MIN_THICKNESS = 6.0
-_DELTA_ARROW_MAX_THICKNESS = 26.0
+_DELTA_ARROW_MIN_THICKNESS = 3.0
+_DELTA_ARROW_MAX_THICKNESS = 24.0
 
 
 def _lerp_color(t: float, alpha: int = 255) -> QColor:
@@ -571,7 +583,14 @@ class PointCloudWidget(QWidget):
             else:
                 vec = None
             if vec is not None and np.all(np.isfinite(vec)):
-                strength = float(np.linalg.norm(vec))
+                # 用「显示空间模长 / 场景尺度」作为合力的归一化幅值（相对位移，
+                # 与单点箭头着色 disp_vis / color_max 同一套尺度）：
+                #  - z 按 _Z_SCALE 放大，避免 z 向合力被低估（否则箭头偏短）；
+                #  - 再除以场景尺度 ref_extent，让小位移不会被绝对数值误判为大位移，
+                #    小力 → 细箭头，不会一上来就拉满粗细。
+                vec_vis = vec.copy()
+                vec_vis[2] *= _Z_SCALE
+                strength = float(np.linalg.norm(vec_vis)) / ref_extent
                 # 最短 / 最长阈值：幅值低于最短阈值不绘制；达到 / 超过最长阈值时
                 # 一律按「最长」处理；两者之间归一化到 0..1，箭头长度与粗细线性分布。
                 if strength > _DELTA_ARROW_MIN_THRESHOLD:
@@ -601,18 +620,27 @@ class PointCloudWidget(QWidget):
                     else:
                         dx, dy = 1.0, 0.0
 
-                    # 长度在「最短可视长度」与「不出框的最长长度」之间归一化分布：
-                    # 最短阈值→最短长度，最长阈值→最长长度，中间线性插值。
-                    min_len = 28.0
-                    max_len = min(rect.width(), rect.height()) * 0.45
-                    length = min_len + (max_len - min_len) * t
+                    # 长度分段增长：拐点内快、拐点外慢，力越大越长（无硬上限，可出框）。
+                    if strength <= _DELTA_ARROW_KNEE:
+                        length = _DELTA_ARROW_MIN_LEN + strength * _DELTA_ARROW_FAST_SCALE
+                    else:
+                        length = (
+                            _DELTA_ARROW_MIN_LEN
+                            + _DELTA_ARROW_KNEE * _DELTA_ARROW_FAST_SCALE
+                            + (strength - _DELTA_ARROW_KNEE) * _DELTA_ARROW_SLOW_SCALE
+                        )
+                    # 整体缩放：0.8 统一缩小，self._zoom 让箭头随滚轮一起放大 / 缩小。
+                    length *= _DELTA_ARROW_LEN_FACTOR * self._zoom
                     tip_x = cx + dx * length
                     tip_y = cy + dy * length
 
-                    # 粗细同样随归一化系数 t 在最小 / 最大粗细之间分布。
+                    # 粗细随归一化系数 t 在最小 / 最大粗细之间分布，
+                    # t 在最长阈值处饱和（不再变粗），避免箭头过粗。
                     thickness = _DELTA_ARROW_MIN_THICKNESS + (
                         _DELTA_ARROW_MAX_THICKNESS - _DELTA_ARROW_MIN_THICKNESS
                     ) * t
+                    # 粗细同样随滚轮缩放（与长度一致）。
+                    thickness *= self._zoom
                     self._draw_delta_arrow(p, cx, cy, tip_x, tip_y, thickness)
 
         p.end()
@@ -756,7 +784,8 @@ class PointCloudWidget(QWidget):
         ux, uy = du / length, dv / length
         px, py = -uy, ux  # 单位法向量
 
-        shaft_w = min(max(float(thickness), 4.0), 30.0)
+        # 粗细已由调用方按滚轮缩放算好，这里只做下限保护，避免过细不可见。
+        shaft_w = max(float(thickness), 4.0)
         head_len = min(max(shaft_w * 2.0, 18.0), length * 0.55)
         head_w = shaft_w * 2.6
         shaft_half = shaft_w * 0.5

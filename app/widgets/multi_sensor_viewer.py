@@ -44,13 +44,37 @@ class SensorRowWidget(QFrame):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(8)
 
-        # 传感器名称（行首）
+        # 传感器名称（行首）：SN + 型号标识 tag
+        if self.sn.upper().startswith("GF515"):
+            model_tag = "GF515"
+            tag_color = "#60a5fa"  # 蓝
+        else:
+            model_tag = "GF225"
+            tag_color = "#f59e0b"  # 橙
+        name_col = QWidget()
+        name_l = QVBoxLayout(name_col)
+        name_l.setContentsMargins(0, 0, 0, 0)
+        name_l.setSpacing(4)
+        name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         name = QLabel(self.sn)
         name.setObjectName("SensorNameLabel")
-        name.setFixedWidth(96)
+        name.setFixedWidth(100)
         name.setWordWrap(True)
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        h.addWidget(name)
+        name_l.addWidget(name)
+
+        tag = QLabel(model_tag)
+        tag.setFixedWidth(100)
+        tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tag.setFont(QFont("", 10, QFont.Weight.Bold))
+        tag.setStyleSheet(
+            f"color: #ffffff; background-color: {tag_color}; "
+            "border-radius: 6px; padding: 2px 0;"
+        )
+        name_l.addWidget(tag)
+
+        h.addWidget(name_col)
 
 
        
@@ -136,7 +160,7 @@ class SensorRowWidget(QFrame):
             self.depth_view.set_depth(data[VTSDataType.DEPTH_MAP])
         if (
             VTSDataType.MARKER_ORIGIN_VECTOR in data
-            and VTSDataType.MARKER_CURRENT_VECTOR in data
+            and VTSDataType.XYZ_VECTOR in data
         ):  
 
             # delta_xyz 取点云自身的三维位移（XYZ_VECTOR - MARKER_ORIGIN_VECTOR），
