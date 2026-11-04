@@ -6,7 +6,7 @@ from PyQt6.QtGui import QFont
 import pyqtgraph as pg
 import numpy as np
 from collections import deque
-from pyvitaisdk import VTSDataType
+from app.sdk import VTSDataType
 
 
 _MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"

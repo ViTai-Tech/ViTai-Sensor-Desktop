@@ -13,7 +13,7 @@ from PyQt6.QtGui import QFont
 
 from app.widgets.image_viewer import ImageLabel
 from app.widgets.data_panel import ForcePlots
-from pyvitaisdk import VTSDataType
+from app.sdk import VTSDataType
 
 
 class SensorRowWidget(QFrame):

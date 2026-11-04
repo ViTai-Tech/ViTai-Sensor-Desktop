@@ -2,14 +2,9 @@ import os
 import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
-from pyvitaisdk import VTSensor, VTSensorType, VTSDataType, VTSError
+from app.sdk import VTSensor, VTSensorType, VTSDataType, VTSError
 
-try:
-    # 帧暂时不可用（区别于相机断开）：采集线程被抢占 CPU 时队列会短暂为空，
-    # 这种错误可重试，不应直接把整个传感器行移除。
-    from pyvitaisdk.common.exceptions import FrameNotAvailableError
-except Exception:  # 安装包结构不一致时退回 None，按致命错误处理
-    FrameNotAvailableError = None
+from app.sdk import FrameNotAvailableError
 
 
 # 串行打开锁：多个 ViTai 传感器共享 USB2.0 带宽，必须「逐个」打开+标定，

@@ -5,7 +5,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
 import cv2
 import numpy as np
-from pyvitaisdk import VTSDataType
+from app.sdk import VTSDataType
 
 
 _MONO_FONT = "Consolas" if sys.platform == "win32" else "DejaVu Sans Mono"

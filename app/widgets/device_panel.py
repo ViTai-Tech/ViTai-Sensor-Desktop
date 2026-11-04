@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 from PyQt6.QtCore import pyqtSignal, QTimer, QThread
-from pyvitaisdk import VTSDeviceFinder, VTSError
+from app.sdk import VTSDeviceFinder, VTSError
 
 from app.widgets.checkable_combo import CheckableComboBox
 
