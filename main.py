@@ -1,6 +1,28 @@
+import faulthandler
 import sys
+from pathlib import Path
+
 from PyQt6.QtWidgets import QApplication
 from app.main_window import MainWindow
+
+
+def _enable_crash_dump():
+    """段错误等原生崩溃时把所有线程堆栈写入 crash 日志，便于现场排查。
+
+    打包版写到 exe 同级目录，源码运行写到项目根目录；
+    文件打不开时退化到 stderr。
+    """
+    try:
+        base = (
+            Path(sys.executable).resolve().parent
+            if getattr(sys, "frozen", False)
+            else Path(__file__).resolve().parent
+        )
+        stream = open(base / "vitai_viewer_crash.log", "a", encoding="utf-8")
+        faulthandler.enable(file=stream, all_threads=True)
+        _enable_crash_dump._stream = stream  # 保持文件句柄存活
+    except OSError:
+        faulthandler.enable(all_threads=True)
 
 
 # 白色 + 浅灰色主题
@@ -76,6 +98,7 @@ QStatusBar { background-color: #f5f5f5; color: #555555; }
 
 
 def main():
+    _enable_crash_dump()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(APP_STYLESHEET)
