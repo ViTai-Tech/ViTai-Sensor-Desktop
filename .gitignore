@@ -27,3 +27,9 @@ app/widgets/weight/
 # Packaging metadata
 *.egg-info/
 
+# 构建生成文件
+/ViTaiViewer.spec
+/app/build_info.py
+
+# 崩溃日志
+/crash.log
