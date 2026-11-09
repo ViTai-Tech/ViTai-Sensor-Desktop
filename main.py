@@ -1,4 +1,5 @@
 import sys
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QApplication
 from app.main_window import MainWindow
 
@@ -78,6 +79,8 @@ QStatusBar { background-color: #f5f5f5; color: #555555; }
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    if sys.platform == "win32":
+        app.setFont(QFont("Microsoft YaHei UI", 9))
     app.setStyleSheet(APP_STYLESHEET)
     window = MainWindow()
     window.show()

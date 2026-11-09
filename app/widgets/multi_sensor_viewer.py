@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QScrollBar,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QGuiApplication, QFont
 
 from app.widgets.image_viewer import ImageLabel
 from app.widgets.data_panel import ForcePlots
@@ -32,7 +32,7 @@ class SensorRowWidget(QFrame):
         v.setSpacing(2)
 
         self.slip_label = QLabel("● --")
-        self.slip_label.setFont(QFont("", 9, QFont.Weight.Bold))
+        self.slip_label.setFont(QFont(QGuiApplication.font().family(), 9, QFont.Weight.Bold))
         self.slip_label.setStyleSheet("color: #2ecc71;")
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
