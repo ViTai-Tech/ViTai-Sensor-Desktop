@@ -18,6 +18,7 @@ from PyQt6.QtCore import pyqtSignal, QTimer, QThread
 from pyvitaisdk import VTSDeviceFinder, VTSError
 
 from app.widgets.checkable_combo import CheckableComboBox
+from app.sensor_categories import filter_sns_by_category
 
 
 class DeviceScanWorker(QThread):
@@ -56,6 +57,9 @@ class DevicePanel(QWidget):
     start_request = pyqtSignal()
     stop_request = pyqtSignal()
     calibrate_request = pyqtSignal()
+    data_capture_request = pyqtSignal()
+    back_requested = pyqtSignal()  # 请求返回首页
+    devices_scanned = pyqtSignal(list)  # 扫描到的 SN 列表（供采集配置复用，免去重复检测）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,19 +70,32 @@ class DevicePanel(QWidget):
         self._had_devices = False
         self._scan_worker = None
         self._weight_dir = None
-        self._last_sns = None
+        self._category = None  # 当前类别过滤（None=不过滤）
+        self._last_raw_sns = None  # 原始（未过滤）SN 列表，用于去抖
         self._setup_ui()
         self._restore_settings()
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._start_scan)
-        self._refresh_timer.start(2000)
-        self._start_scan()
+        # 扫描在页面可见时才启动（on_shown），避免多个查看器页面同时扫描；
+        # 隐藏时由 on_hidden 停止。
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(14, 8, 14, 8)
         layout.setSpacing(8)
+
+        self.back_btn = QPushButton("← 返回")
+        self.back_btn.setObjectName("BackBtn")
+        self.back_btn.setToolTip("返回首页")
+        self.back_btn.clicked.connect(self.back_requested.emit)
+        layout.addWidget(self.back_btn)
+
+        self.title_label = QLabel("")
+        self.title_label.setObjectName("ViewerTitle")
+        layout.addWidget(self.title_label)
+
+        layout.addSpacing(8)
 
         sn_layout = QHBoxLayout()
         sn_layout.setSpacing(6)
@@ -151,32 +168,67 @@ class DevicePanel(QWidget):
         self.weight_label.setStyleSheet("color: #64748b; font-size: 12px;")
         layout.addWidget(self.weight_label)
 
+        layout.addSpacing(36)
+
+        self.data_capture_btn = QPushButton("数据采集")
+        self.data_capture_btn.setObjectName("GhostBtn")
+        self.data_capture_btn.setToolTip("配置并开始录制传感器数据到本地文件")
+        self.data_capture_btn.clicked.connect(self._on_data_capture)
+        layout.addWidget(self.data_capture_btn)
+
         layout.addStretch()
 
     def _start_scan(self):
         if self._scan_worker is not None and self._scan_worker.isRunning():
             return
-        self._scan_worker = DeviceScanWorker()
-        self._scan_worker.devices_found.connect(self._on_scan_result)
-        self._scan_worker.scan_error.connect(self._on_scan_error)
-        self._scan_worker.finished.connect(lambda: setattr(self, '_scan_worker', None))
-        self._scan_worker.start()
+        worker = DeviceScanWorker()
+        worker.devices_found.connect(self._on_scan_result)
+        worker.scan_error.connect(self._on_scan_error)
+        worker.finished.connect(self._on_scan_finished)
+        self._scan_worker = worker
+        worker.start()
+
+    def _on_scan_finished(self):
+        # 等线程真正结束后再释放引用，避免 QThread 在 run() 未退出时被回收
+        worker = self._scan_worker
+        self._scan_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def set_title(self, text):
+        """设置查看器标题（紧跟返回按钮，弱化展示）。"""
+        self.title_label.setText(text or "")
+
+    def set_category(self, cat_id):
+        """设置类别过滤：只显示属于该类别的传感器。
+
+        cat_id 为 None 表示不过滤。设置后若已扫描过则立即重新过滤显示。
+        """
+        self._category = cat_id
+        if self._last_raw_sns is not None:
+            self._apply_devices(list(self._last_raw_sns))
 
     def _on_scan_result(self, sns):
         # 设备列表未变化时直接跳过，避免每 2 秒重建下拉框导致滚动位置被重置、
         # 勾选状态与展开状态被打断（下拉框"弹回顶部"）。
-        sns_tuple = tuple(sorted(sns)) if sns else ()
-        if self._last_sns is not None and sns_tuple == self._last_sns:
+        raw = tuple(sorted(sns)) if sns else ()
+        if self._last_raw_sns is not None and raw == self._last_raw_sns:
             self._update_buttons()
             return
-        self._last_sns = sns_tuple
+        self._last_raw_sns = raw
+        self._apply_devices(list(raw))
+
+    def _apply_devices(self, raw_sns):
+        """按当前类别过滤原始 SN，重建勾选下拉框，并通知采集面板。"""
+        filtered = filter_sns_by_category(raw_sns, self._category)
+        self.devices_scanned.emit(filtered)
 
         # 保存当前勾选的 SN，避免刷新时丢失用户选择
         previous = set(self.sn_check_combo.checked_items())
         self.sn_check_combo.clear_items()
-        if sns:
+        if filtered:
             self.sn_check_combo.add_select_all_item()
-            for sn in sns:
+            for sn in filtered:
                 self.sn_check_combo.add_item(sn, checked=(sn in previous))
             self._had_devices = True
         else:
@@ -186,9 +238,27 @@ class DevicePanel(QWidget):
             self._had_devices = False
         self._update_buttons()
 
+    def _apply_category_filter(self):
+        """对当前下拉框中的 SN 重新按类别过滤（用于切换类别 / UI 热更新后）。"""
+        current = self.sn_check_combo.all_items()
+        filtered = filter_sns_by_category(current, self._category)
+        if filtered == current:
+            self._update_buttons()
+            return
+        previous = set(self.sn_check_combo.checked_items())
+        self.sn_check_combo.clear_items()
+        if filtered:
+            self.sn_check_combo.add_select_all_item()
+            for sn in filtered:
+                self.sn_check_combo.add_item(sn, checked=(sn in previous))
+        else:
+            self.sn_check_combo.add_placeholder("未找到设备")
+        self.devices_scanned.emit(filtered)
+        self._update_buttons()
+
     def _on_scan_error(self, msg):
         # 出错后强制下一次成功扫描重建列表，避免把"错误"占位误判为未变化
-        self._last_sns = None
+        self._last_raw_sns = None
         self.sn_check_combo.clear_items()
         self.sn_check_combo.add_placeholder("错误")
         self._update_buttons()
@@ -254,18 +324,18 @@ class DevicePanel(QWidget):
         self._connected = False
         self._streaming = False
         self.model_label.setText("型号: --")
-        self._refresh_timer.start(2000)
+        self.on_shown()
         self._update_buttons()
 
     def _on_start(self):
         self._streaming = True
-        self._refresh_timer.stop()
+        self.on_hidden()
         self._update_buttons()
         self.start_request.emit()
 
     def _on_stop(self):
         self._streaming = False
-        self._refresh_timer.start(2000)
+        self.on_shown()
         self._update_buttons()
         self.stop_request.emit()
 
@@ -276,7 +346,32 @@ class DevicePanel(QWidget):
     def on_worker_disconnected(self):
         self._connected = False
         self._streaming = False
-        self._refresh_timer.start(2000)
+        self.on_shown()
+        self._update_buttons()
+
+    def on_shown(self):
+        """页面可见时：未连接则启动设备扫描计时器。"""
+        if not self._connected and self.isVisible():
+            self._refresh_timer.start(2000)
+            self._start_scan()
+
+    def on_hidden(self):
+        """页面隐藏时：停止设备扫描（避免多页同时扫描）。"""
+        self._refresh_timer.stop()
+
+    def reset_state(self):
+        """重置为初始状态（未连接、无设备列表、无扫描缓存）。
+
+        用于返回首页：下次进入查看器页时从零开始，重新扫描并重新勾选。
+        """
+        self._connected = False
+        self._streaming = False
+        self._had_devices = False
+        self._last_raw_sns = None
+        self._refresh_timer.stop()
+        self.sn_check_combo.clear_items()
+        self.sn_check_combo.add_placeholder("未找到设备")
+        self.model_label.setText("型号 · --")
         self._update_buttons()
 
     def _update_buttons(self):
@@ -290,6 +385,7 @@ class DevicePanel(QWidget):
         self.stop_btn.setEnabled(self._connected and self._streaming)
         self.marker_spin.setEnabled(not self._connected)
         self.weight_btn.setEnabled(not self._connected)
+        self.data_capture_btn.setEnabled(True)
 
     def _restore_settings(self):
         try:
@@ -376,6 +472,21 @@ class DevicePanel(QWidget):
     def get_weight_dir(self):
         return self._weight_dir
 
+    def _on_data_capture(self):
+        """点击后请求主窗口切换数据采集面板的显示/隐藏。"""
+        self.data_capture_request.emit()
+
+    def set_capture_active(self, active):
+        """反映数据采集面板是否展开：切换「数据采集」按钮文案与高亮。"""
+        if active:
+            self.data_capture_btn.setText("退出采集")
+            self.data_capture_btn.setObjectName("DangerBtn")
+        else:
+            self.data_capture_btn.setText("数据采集")
+            self.data_capture_btn.setObjectName("GhostBtn")
+        self.data_capture_btn.style().unpolish(self.data_capture_btn)
+        self.data_capture_btn.style().polish(self.data_capture_btn)
+
     def get_marker_size(self):
         return self.marker_spin.value()
 
@@ -392,7 +503,7 @@ class DevicePanel(QWidget):
             "marker_size": self.marker_spin.value(),
             "checked_sns": list(self.sn_check_combo.checked_items()),
             "all_sns": list(self.sn_check_combo.all_items()),
-            "last_sns": self._last_sns,
+            "last_sns": self._last_raw_sns,
             "model_text": self.model_label.text(),
             "weight_text": self.weight_label.text(),
             "weight_style": self.weight_label.styleSheet(),
@@ -406,7 +517,7 @@ class DevicePanel(QWidget):
         self._connected = bool(state.get("connected"))
         self._streaming = bool(state.get("streaming"))
         self._had_devices = bool(state.get("had_devices"))
-        self._last_sns = state.get("last_sns")
+        self._last_raw_sns = state.get("last_sns")
         self._weight_dir = state.get("weight_dir")
 
         marker = state.get("marker_size")
@@ -429,10 +540,13 @@ class DevicePanel(QWidget):
         elif self._had_devices:
             self.sn_check_combo.add_placeholder("未找到设备")
 
+        if self._category is not None:
+            self._apply_category_filter()
+
         if self._connected:
             self._refresh_timer.stop()
         else:
-            self._refresh_timer.start(2000)
+            self.on_shown()
 
         self._update_buttons()
 

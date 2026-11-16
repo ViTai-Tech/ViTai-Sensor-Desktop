@@ -30,7 +30,7 @@ class SensorRowWidget(QFrame):
     def _setup_ui(self):
         # 整体行：名称列 tag 下方放帧率与滑动状态，其余为名称 + 图像 + 波形
         v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 8)
+        v.setContentsMargins(0, 4, 0, 4)
         v.setSpacing(4)
 
         h = QHBoxLayout()
@@ -41,6 +41,9 @@ class SensorRowWidget(QFrame):
         if self.sn.upper().startswith("GF515"):
             model_tag = "GF515"
             tag_color = "#60a5fa"  # 蓝
+        elif self.sn.upper().startswith("GF220"):
+            model_tag = "GF220"
+            tag_color = "#34d399"  # 绿
         else:
             model_tag = "GF225"
             tag_color = "#f59e0b"  # 橙
@@ -48,7 +51,10 @@ class SensorRowWidget(QFrame):
         name_l = QVBoxLayout(name_col)
         name_l.setContentsMargins(0, 0, 0, 0)
         name_l.setSpacing(4)
-        name_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # 上下各放一个可伸缩间隔，把这组标签作为整体在当前行空间内垂直居中，
+        # 避免多余行高被平均分配到每个 QLabel 上而把标签拉开。
+        name_l.addStretch(1)
 
         name = QLabel(self.sn)
         name.setObjectName("SensorNameLabel")
@@ -77,12 +83,13 @@ class SensorRowWidget(QFrame):
 
         # 滑动状态：放在 tag 下方（帧率之下）
         self.slip_label = QLabel("● --")
-        self.slip_label.setFixedWidth(120)
+        self.slip_label.setFixedWidth(100)
         self.slip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.slip_label.setFont(QFont("", 8, QFont.Weight.Bold))
         self.slip_label.setStyleSheet("color: #34d399;")
-        self.slip_label.setContentsMargins(0, 0, 4, 0)
         name_l.addWidget(self.slip_label)
+
+        name_l.addStretch(1)
 
         h.addWidget(name_col)
 
@@ -296,20 +303,20 @@ class MultiSensorViewer(QWidget):
         header = QFrame()
         header.setObjectName("TableHeader")
         h = QHBoxLayout(header)
-        # 左侧 12(页边距) + 10(行边距)，右侧同理，保证与每行的列对齐
-        h.setContentsMargins(22, 6, 22, 6)
+        # 页面边距已去掉，表头左右同样不留边距，保证与每行对齐
+        h.setContentsMargins(0, 6, 0, 6)
         h.setSpacing(8)
 
         name = QLabel("传感器")
         name.setObjectName("TableHeaderCell")
-        name.setFixedWidth(96)
+        name.setFixedWidth(100)
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.addWidget(name)
 
         # 前两列固定表头
         for title, stretch in (
             ("warp image", 3),
-            ("点云位移", 3),
+            ("marker点图", 3),
         ):
             lab = QLabel(title)
             lab.setObjectName("TableHeaderCell")
@@ -387,10 +394,14 @@ class MultiSensorViewer(QWidget):
         for page_sns in _chunk(self._sns, self.PAGE_SIZE):
             page = QWidget()
             pl = QVBoxLayout(page)
-            pl.setContentsMargins(12, 12, 12, 12)
-            pl.setSpacing(10)
-            for sn in page_sns:
+            pl.setContentsMargins(0, 0, 0, 0)
+            pl.setSpacing(0)
+            for i, sn in enumerate(page_sns):
                 row = SensorRowWidget(sn)
+                if i == len(page_sns) - 1:
+                    row.setProperty("last", True)
+                    row.style().unpolish(row)
+                    row.style().polish(row)
                 self._rows[sn] = row
                 pl.addWidget(row, 1)
             self._stack.addWidget(page)

@@ -101,6 +101,9 @@ class SensorWorker(QThread):
         self._running = False
         self._vtsensor = None
         self._do_calibrate = False
+        # 最新一帧合并数据：供数据采集线程复用同一台设备（不再二次打开相机）
+        self._latest = {}
+        self._latest_lock = threading.Lock()
 
     def run(self):
         try:
@@ -190,6 +193,9 @@ class SensorWorker(QThread):
 
                 merged.update(data)
 
+                with self._latest_lock:
+                    self._latest = dict(merged)
+
                 if now - last_display_time >= self._display_interval:
                     self.data_ready.emit(dict(merged))
                     last_display_time = now
@@ -210,6 +216,14 @@ class SensorWorker(QThread):
                 self._vtsensor.release()
             self._running = False
             self.disconnected.emit()
+
+    def latest_data(self):
+        """返回最近一次采集合并后的完整数据（含全部已请求类型）。
+
+        数据采集线程通过它复用本线程已经打开的相机，避免同一设备被二次打开。
+        """
+        with self._latest_lock:
+            return dict(self._latest)
 
     def stop(self):
         self._running = False

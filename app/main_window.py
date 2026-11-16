@@ -2,14 +2,14 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
-    QStatusBar,
     QLabel,
-    QMessageBox,
+    QStatusBar,
+    QStackedWidget,
 )
 
 from app.build_info import APP_VERSION, GIT_BRANCH, SDK_WHEEL
-from app.sensor_worker import SensorWorker
-from pyvitaisdk import VTSDataType
+from app.widgets.home_page import HomePage
+from app.widgets.viewer_page import ViewerPage
 
 
 class MainWindow(QMainWindow):
@@ -24,54 +24,41 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1100, 700)
         self.resize(1400, 850)
 
-        self._workers = {}   # sn -> SensorWorker
-        self._configs = []   # 已连接的传感器配置
-        self._fps = {}       # sn -> 最近帧率
+        # 每个传感器类别对应一个常驻的 ViewerPage（保留各自的连接状态）
+        self._viewer_pages = {}
 
         self._setup_ui()
-        self._connect_signals()
+        self._go_home()
 
     def _setup_ui(self):
-        # 局部导入，便于 UI 热更新后拿到 reload 过的类
-        from app.widgets.device_panel import DevicePanel
-        from app.widgets.multi_sensor_viewer import MultiSensorViewer
-
         central = QWidget()
         self.setCentralWidget(central)
 
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         # =========================================================
-        # 顶部 - 设备控制栏
+        # 内容区：首页 + 各类别查看器页（用 QStackedWidget 切换）
         # =========================================================
-        self.device_panel = DevicePanel()
-        main_layout.addWidget(
-            self.device_panel
-        )
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, 1)
 
-        # =========================================================
-        # 中部 - 多传感器滚动显示区
-        # =========================================================
-        self.multi_viewer = MultiSensorViewer()
-        main_layout.addWidget(
-            self.multi_viewer,
-            1,
-        )
+        self.home_page = HomePage()
+        self.stack.addWidget(self.home_page)
+        self.home_page.category_selected.connect(self._open_category)
+        # 首页设备计数兜底：正在出流的传感器会被 SDK 独占而扫描不到
+        self.home_page.set_live_sns_provider(self._streaming_sns)
 
         # =========================================================
         # 状态栏
         # =========================================================
         self.status_bar = QStatusBar()
-        self.setStatusBar(
-            self.status_bar
-        )
+        self.setStatusBar(self.status_bar)
 
         self.status_label = QLabel("就绪")
         self.ts_label = QLabel("时间戳: --")
 
-        # 构建来源信息：状态栏右侧的小字「副标题」
         self.build_info_label = QLabel(
             f"Git: {GIT_BRANCH} | SDK: {SDK_WHEEL}"
         )
@@ -81,324 +68,90 @@ class MainWindow(QMainWindow):
             f"SDK wheel: {SDK_WHEEL}"
         )
 
-        self.status_bar.addWidget(
-            self.status_label
-        )
+        self.status_bar.addWidget(self.status_label)
+        self.status_bar.addPermanentWidget(self.build_info_label)
+        self.status_bar.addPermanentWidget(self.ts_label)
 
-        self.status_bar.addPermanentWidget(
-            self.build_info_label
-        )
-
-        self.status_bar.addPermanentWidget(
-            self.ts_label
-        )
-
-    def _connect_signals(self):
-        self.device_panel.connect_request.connect(
-            self._on_connect
-        )
-        self.device_panel.disconnect_request.connect(
-            self._on_disconnect
-        )
-        self.device_panel.start_request.connect(
-            self._on_start
-        )
-        self.device_panel.stop_request.connect(
-            self._on_stop
-        )
-        self.device_panel.calibrate_request.connect(
-            self._on_calibrate
-        )
-
-    def _disconnect_panel_signals(self):
-        panel = getattr(self, "device_panel", None)
-        if panel is None:
-            return
-        for signal in (
-            panel.connect_request,
-            panel.disconnect_request,
-            panel.start_request,
-            panel.stop_request,
-            panel.calibrate_request,
-        ):
+    # ------------------------------------------------------------------ #
+    # 导航
+    # ------------------------------------------------------------------ #
+    def _go_home(self):
+        # 有正在进行的采集时，先走与「退出数据采集」一致的询问流程；
+        # 用户取消则留在当前页面，不做任何改动。
+        for page in self._viewer_pages.values():
             try:
-                signal.disconnect()
-            except TypeError:
+                if not page.confirm_leave_capture():
+                    return
+            except Exception:
+                pass
+        # 先关掉所有出流，释放相机，否则首页扫描不到被占用的设备
+        self._release_devices()
+        self.stack.setCurrentWidget(self.home_page)
+        self.status_label.setText("就绪")
+        # 返回首页时重新扫描一次设备
+        self.home_page.refresh_devices()
+
+    def _release_devices(self):
+        for page in self._viewer_pages.values():
+            try:
+                page.release_devices()
+            except Exception:
                 pass
 
+    def _streaming_sns(self):
+        sns = []
+        for page in self._viewer_pages.values():
+            try:
+                sns.extend(page.streaming_sns())
+            except Exception:
+                pass
+        return sns
+
+    def _open_category(self, cat_id):
+        page = self._viewer_pages.get(cat_id)
+        if page is None:
+            page = ViewerPage(cat_id)
+            page.back_requested.connect(self._go_home)
+            page.status_changed.connect(self.status_label.setText)
+            page.timestamp_changed.connect(self.ts_label.setText)
+            page.transient_message.connect(
+                lambda m, t=2000: self.status_bar.showMessage(m, t)
+            )
+            self._viewer_pages[cat_id] = page
+            self.stack.addWidget(page)
+
+        self.stack.setCurrentWidget(page)
+        # 进入页面时立即刷新一次设备列表
+        page.on_shown()
+
+    # ------------------------------------------------------------------ #
+    # 热更新：首页无状态直接重建；各查看器页保留 worker 连接就地刷新
+    # ------------------------------------------------------------------ #
     def reload_ui(self):
-        """就地重建 UI，保留传感器 worker 连接。"""
-        from app.ui_hot_reload import reload_widget_modules
+        was_home = self.stack.currentWidget() is self.home_page
 
-        panel_state = None
-        viewer_sns = []
-        status_text = "就绪"
-        ts_text = "时间戳: --"
+        # 重建首页
+        self.stack.removeWidget(self.home_page)
+        self.home_page.deleteLater()
+        self.home_page = HomePage()
+        self.home_page.category_selected.connect(self._open_category)
+        self.home_page.set_live_sns_provider(self._streaming_sns)
+        self.stack.insertWidget(0, self.home_page)
 
-        if hasattr(self, "device_panel"):
-            panel_state = self.device_panel.export_ui_state()
-            self.device_panel.prepare_destroy()
-            self._disconnect_panel_signals()
-
-        if hasattr(self, "multi_viewer"):
-            viewer_sns = self.multi_viewer.sensor_sns()
-
-        if hasattr(self, "status_label"):
-            status_text = self.status_label.text()
-            ts_text = self.ts_label.text()
-
-        reload_widget_modules()
-        self._setup_ui()
-        self._connect_signals()
-
-        if panel_state is not None:
-            self.device_panel.apply_ui_state(panel_state)
-
-        if viewer_sns:
-            self.multi_viewer.set_sensors(viewer_sns)
-            if self._workers:
-                self.multi_viewer.set_loading(viewer_sns, False)
-
-        self.status_label.setText(status_text)
-        self.ts_label.setText(ts_text)
+        # 各查看器页就地刷新（保留传感器连接）
+        for page in self._viewer_pages.values():
+            page.reload_ui()
 
         self.status_bar.showMessage("UI 已热更新", 2000)
         print("[reload] UI 已就地刷新（传感器连接保留）")
 
-    def _sns(self):
-        return [
-            c.SN
-            for c in self._configs
-        ]
+        if was_home:
+            self.stack.setCurrentWidget(self.home_page)
 
-    def _on_connect(self, configs):
-        self._configs = list(configs)
-        self._start_all_workers()
-
-    def _start_all_workers(self):
-        self._stop_all_workers()
-
-        sns = self._sns()
-
-        self.multi_viewer.set_sensors(
-            sns
-        )
-        self.multi_viewer.set_loading(
-            sns,
-            True,
-        )
-
-        self._fps.clear()
-
-        marker_size = (
-            self.device_panel.get_marker_size()
-        )
-
-        offsets = (
-            self.device_panel.get_marker_offsets()
-        )
-
-        weight_dir = (
-            self.device_panel.get_weight_dir()
-        )
-
-        for config in self._configs:
-            sn = config.SN
-
-            worker = SensorWorker(
-                config,
-                marker_size,
-                offsets,
-                weight_dir,
-                display_freq=30,
-            )
-
-            worker.data_ready.connect(
-                lambda data, sn=sn:
-                self._on_data_ready(
-                    sn,
-                    data,
-                )
-            )
-
-            worker.error_occurred.connect(
-                lambda msg, sug, sn=sn:
-                self._on_worker_error(
-                    sn,
-                    msg,
-                    sug,
-                )
-            )
-
-            worker.fps_updated.connect(
-                lambda fps, sn=sn:
-                self._on_fps_updated(
-                    sn,
-                    fps,
-                )
-            )
-
-            worker.weight_status.connect(
-                self._on_weight_status
-            )
-
-            self._workers[sn] = worker
-            worker.start()
-
-        self.status_label.setText(
-            f"采集中 ({len(self._configs)}个传感器)"
-        )
-
-    def _on_disconnect(self):
-        self._stop_all_workers()
-
-        self._configs = []
-        self._fps.clear()
-
-        self.status_label.setText(
-            "就绪"
-        )
-        self.ts_label.setText(
-            "时间戳: --"
-        )
-
-        self.multi_viewer.reset()
-
-    def _on_start(self):
-        if not self._configs:
-            return
-
-        self._start_all_workers()
-
-    def _on_stop(self):
-        self._stop_all_workers()
-
-        self._fps.clear()
-
-        self.status_label.setText(
-            "已停止"
-        )
-        self.ts_label.setText(
-            "时间戳: --"
-        )
-
-    def _on_calibrate(self):
-        for worker in self._workers.values():
-            if worker.isRunning():
-                worker.calibrate()
-
-        self.status_bar.showMessage(
-            "已重新校准",
-            2000,
-        )
-
-    def _on_data_ready(
-        self,
-        sn,
-        data,
-    ):
-        self.multi_viewer.set_loading(
-            [sn],
-            False,
-        )
-
-        self.multi_viewer.update_data(
-            sn,
-            data,
-        )
-
-        if VTSDataType.TIME_STAMP in data:
-            self.ts_label.setText(
-                f"时间戳: "
-                f"{data[VTSDataType.TIME_STAMP]}"
-            )
-
-    def _on_weight_status(
-        self,
-        applied,
-        msg,
-    ):
-        self.status_bar.showMessage(
-            msg,
-            3000,
-        )
-
-    def _on_fps_updated(
-        self,
-        sn,
-        fps,
-    ):
-        self._fps[sn] = fps
-
-        # 帧率显示在对应传感器行的 tag 下方（每个传感器独立）
-        self.multi_viewer.set_fps(sn, fps)
-
-    def _on_worker_error(
-        self,
-        sn,
-        message,
-        suggestion,
-    ):
-        self._remove_worker(sn)
-
-        self.multi_viewer.remove_sensor(
-            sn
-        )
-
-        if self._workers:
-            self.status_bar.showMessage(
-                f"[{sn}] {message}",
-                5000,
-            )
-        else:
-            full = message
-
-            if suggestion:
-                full += (
-                    f"\n\n建议: {suggestion}"
-                )
-
-            QMessageBox.critical(
-                self,
-                f"传感器错误 ({sn})",
-                full,
-            )
-
-            self.status_label.setText(
-                f"错误: {message[:60]}"
-            )
-
-            self.device_panel.on_worker_disconnected()
-
-    def _remove_worker(
-        self,
-        sn,
-    ):
-        worker = self._workers.pop(
-            sn,
-            None,
-        )
-
-        if worker is not None:
-            if worker.isRunning():
-                worker.stop()
-                worker.wait(3000)
-
-            if worker.isRunning():
-                worker.terminate()
-                worker.wait()
-
-    def _stop_all_workers(self):
-        for sn in list(
-            self._workers.keys()
-        ):
-            self._remove_worker(sn)
-
-        self._workers.clear()
-
-    def closeEvent(
-        self,
-        event,
-    ):
-        self._stop_all_workers()
+    def closeEvent(self, event):
+        for page in self._viewer_pages.values():
+            try:
+                page.shutdown()
+            except Exception:
+                pass
         event.accept()

@@ -27,3 +27,5 @@ app/widgets/weight/
 # Packaging metadata
 *.egg-info/
 
+app/capture_client/data/
+app/capture_client/config/sensor_fingers.json
