@@ -99,6 +99,9 @@ class SensorWorker(QThread):
         self._display_interval = 1.0 / max(display_freq, 1)
         self._heavy_interval = 1.0 / max(heavy_freq, 1)
         self._running = False
+        # 停止意图：与采集循环的 _running 分开，保证「还没开始采集就被要求停止」
+        # 的线程在打开/标定完成后立刻退出，而不是白跑一遍完整的开相机流程。
+        self._stop_requested = False
         self._vtsensor = None
         self._do_calibrate = False
         # 最新一帧合并数据：供数据采集线程复用同一台设备（不再二次打开相机）
@@ -107,6 +110,10 @@ class SensorWorker(QThread):
 
     def run(self):
         try:
+            # 启动前已被要求停止（例如刚点连接就返回首页）：直接退出，别去开相机
+            if self._stop_requested:
+                return
+
             force_model_path = None
             if self._weight_dir:
                 sn = self._config.SN if hasattr(self._config, 'SN') else ''
@@ -147,6 +154,9 @@ class SensorWorker(QThread):
                 # 打开+标定在锁内串行进行，避免 MSMF 并发开流竞态
                 self._vtsensor = VTSensor(**kwargs)
                 self._vtsensor.calibrate()
+            # 打开/标定期间可能已被要求停止：直接走 finally 释放相机
+            if self._stop_requested:
+                return
             self.sensor_info.emit(str(self._vtsensor.sensor_type.value))
             self.connected.emit()
 
@@ -226,6 +236,7 @@ class SensorWorker(QThread):
             return dict(self._latest)
 
     def stop(self):
+        self._stop_requested = True
         self._running = False
 
     def calibrate(self):

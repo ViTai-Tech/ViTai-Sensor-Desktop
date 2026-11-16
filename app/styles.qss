@@ -326,7 +326,6 @@ QMessageBox QPushButton {
     background-color: rgba(15, 23, 42, 0.82);
     border: 1px solid #1e3a5f;
     border-radius: 16px;
-    width: 340px;
     min-height: 430px;
 }
 #CategoryCard:hover {

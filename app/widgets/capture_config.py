@@ -6,8 +6,8 @@
 预览画面（预览由 MultiSensorViewer 负责），录制线程推来的帧通过 frame_ready
 信号转发，供需要预览的宿主自行订阅。设备检测交由 DevicePanel 的刷新按钮。
 
-为规避与 app.capture_client.vitai_capture_gui 的循环依赖，运行所需的
-Worker / 手指标定组件 / 文案等都在 __init__ 中延迟导入。
+采集所需的 Worker / 手指标定组件 / 文案由 app.capture_engine 提供
+（与 app/sensor_worker.py 同类的纯逻辑模块，不含界面）。
 """
 import os
 
@@ -25,6 +25,18 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+
+from app.capture_engine import (
+    CONFIG_DIR,
+    DATA_DIR,
+    SAVE_TYPES,
+    ColorCheckBox,
+    DataCaptureWorker,
+    FingerAssignWidget,
+    _RETRANSLATE,
+    _sanitize_name,
+    tr,
+)
 
 # GF515 系列传感器才需要「左右手 / 手指」标定与配置导入；其它型号（如 GF225）
 # 直接以 SN 录制。型号以 SN 前缀判定（与 multi_sensor_viewer / image_viewer 一致）。
@@ -54,10 +66,6 @@ class CaptureConfigWidget(QWidget):
         super().__init__(parent)
         self.setObjectName("CaptureConfig")
 
-        # 延迟导入，避免与 vitai_capture_gui 形成循环依赖
-        from app.capture_client import vitai_capture_gui as cap
-        self._cap = cap
-
         self._worker = None
         self._starting = False   # 启动流程进行中（含基线确认弹窗）→ 防重复触发
         self._sns = []  # 由 DevicePanel 注入的已扫描 SN（用于 UI / 手指标定）
@@ -69,15 +77,14 @@ class CaptureConfigWidget(QWidget):
         # 渲染线程 worker 表提供者：采集复用同一台设备，避免二次开相机
         self._sensor_workers_cb = None
         self._gf515 = False  # 当前设备是否均为 GF515（决定是否显示手指标定）
-        self._finger_widget = cap.FingerAssignWidget()
+        self._finger_widget = FingerAssignWidget()
 
         self._setup_ui()
         self._refresh_path()
-        self.setMinimumWidth(360)
-        cap._RETRANSLATE.append(self.retranslate)
+        self.setMinimumWidth(400)
+        _RETRANSLATE.append(self.retranslate)
 
     def _setup_ui(self):
-        cap = self._cap
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -89,7 +96,7 @@ class CaptureConfigWidget(QWidget):
         v.setSpacing(10)
 
         # 标题行：标题
-        self._title = QLabel(cap.tr("app_title"))
+        self._title = QLabel(tr("app_title"))
         self._title.setObjectName("panelTitle")
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
@@ -97,7 +104,7 @@ class CaptureConfigWidget(QWidget):
         title_row.addStretch(1)
         v.addLayout(title_row)
 
-        self._sub = QLabel(cap.tr("panel_subtitle"))
+        self._sub = QLabel(tr("panel_subtitle"))
         self._sub.setObjectName("panelSub")
         self._sub.setWordWrap(True)
         v.addWidget(self._sub)
@@ -106,11 +113,11 @@ class CaptureConfigWidget(QWidget):
         # 采集/停止按钮（检测交由 DevicePanel 的刷新按钮；导入配置仅 GF515 显示）
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        self.import_btn = QPushButton(cap.tr("btn_import"))
+        self.import_btn = QPushButton(tr("btn_import"))
         self.import_btn.setVisible(False)  # GF515 才显示，由 set_devices 控制
-        self.start_btn = QPushButton(cap.tr("btn_start"))
-        self.stop_btn = QPushButton(cap.tr("btn_stop"))
-        self.recalib_btn = QPushButton(cap.tr("btn_recalib"))
+        self.start_btn = QPushButton(tr("btn_start"))
+        self.stop_btn = QPushButton(tr("btn_stop"))
+        self.recalib_btn = QPushButton(tr("btn_recalib"))
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.recalib_btn.setEnabled(False)   # 出流后才可重新标定
@@ -128,25 +135,25 @@ class CaptureConfigWidget(QWidget):
         self._finger_widget.setVisible(False)  # GF515 才显示，由 set_devices 控制
 
         # 存储设置
-        self._store = QGroupBox(cap.tr("store_title"))
+        self._store = QGroupBox(tr("store_title"))
         self._store_form = QFormLayout(self._store)
         self._store_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         self.task_edit = QLineEdit()
-        self.task_edit.setPlaceholderText(cap.tr("task_placeholder"))
+        self.task_edit.setPlaceholderText(tr("task_placeholder"))
         self.task_edit.textChanged.connect(self._refresh_path)
-        self._store_form.addRow(cap.tr("label_folder"), self.task_edit)
+        self._store_form.addRow(tr("label_folder"), self.task_edit)
         self.path_label = QLabel("")
         self.path_label.setObjectName("panelSub")
         self.path_label.setWordWrap(True)
-        self._store_form.addRow(cap.tr("label_path"), self.path_label)
+        self._store_form.addRow(tr("label_path"), self.path_label)
         v.addWidget(self._store)
 
         # 保存内容：每类数据一个复选框；采集线程按勾选向 SDK 请求数据类型
-        self._save_box = QGroupBox(cap.tr("save_group"))
+        self._save_box = QGroupBox(tr("save_group"))
         save_col = QVBoxLayout(self._save_box)
         self._save_checks = {}
-        for key in cap.SAVE_TYPES:
-            cb = cap.ColorCheckBox(cap.tr(f"save_{key}"))
+        for key in SAVE_TYPES:
+            cb = ColorCheckBox(tr(f"save_{key}"))
             cb.setChecked(key not in ("diff", "raw"))   # 默认不勾 diff 视频与原生视频
             cb.toggled.connect(self._push_spec)
             self._save_checks[key] = cb
@@ -154,13 +161,13 @@ class CaptureConfigWidget(QWidget):
         v.addWidget(self._save_box)
 
         # 任务录制（episode）
-        self._seg = QGroupBox(cap.tr("seg_title"))
+        self._seg = QGroupBox(tr("seg_title"))
         seg_form = QFormLayout(self._seg)
         seg_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         seg_btn_row = QHBoxLayout()
         seg_btn_row.setSpacing(8)
-        self.seg_start_btn = QPushButton(cap.tr("btn_seg_start"))
-        self.seg_end_btn = QPushButton(cap.tr("btn_seg_end"))
+        self.seg_start_btn = QPushButton(tr("btn_seg_start"))
+        self.seg_end_btn = QPushButton(tr("btn_seg_end"))
         self.seg_start_btn.setEnabled(False)
         self.seg_end_btn.setEnabled(False)
         self.seg_start_btn.clicked.connect(self._seg_start)
@@ -169,7 +176,7 @@ class CaptureConfigWidget(QWidget):
         seg_btn_row.addWidget(self.seg_end_btn)
         seg_btn_row.addStretch(1)
         seg_form.addRow("", seg_btn_row)
-        self.seg_hint = QLabel(cap.tr("seg_hint_idle"))
+        self.seg_hint = QLabel(tr("seg_hint_idle"))
         self._seg_hint_key = "seg_hint_idle"
         self.seg_hint.setObjectName("panelSub")
         self.seg_hint.setWordWrap(True)
@@ -185,38 +192,37 @@ class CaptureConfigWidget(QWidget):
         outer.addWidget(scroll, 1)
 
         # 底部状态行（标定/出流进度、错误提示）：始终可见
-        self.status = QLabel(cap.tr("status_ready"))
+        self.status = QLabel(tr("status_ready"))
         self.status.setObjectName("panelSub")
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
 
     def _refresh_path(self):
-        task = self._cap._sanitize_name(self.task_edit.text(), "unnamed")
-        self.path_label.setText(os.path.join(self._cap.DATA_DIR, task) + "/")
+        task = _sanitize_name(self.task_edit.text(), "unnamed")
+        self.path_label.setText(os.path.join(DATA_DIR, task) + "/")
 
     # -- 文案刷新（语言切换按钮已移除，保留以备 UI 热更新复用）--
     def retranslate(self):
         """语言切换时刷新本组件所有静态文案。"""
-        cap = self._cap
-        self._title.setText(cap.tr("app_title"))
-        self._sub.setText(cap.tr("panel_subtitle"))
-        self.import_btn.setText(cap.tr("btn_import"))
-        self.start_btn.setText(cap.tr("btn_start"))
-        self.stop_btn.setText(cap.tr("btn_stop"))
-        self._store.setTitle(cap.tr("store_title"))
-        self.task_edit.setPlaceholderText(cap.tr("task_placeholder"))
-        self._store_form.labelForField(self.task_edit).setText(cap.tr("label_folder"))
-        self._store_form.labelForField(self.path_label).setText(cap.tr("label_path"))
-        self._save_box.setTitle(cap.tr("save_group"))
+        self._title.setText(tr("app_title"))
+        self._sub.setText(tr("panel_subtitle"))
+        self.import_btn.setText(tr("btn_import"))
+        self.start_btn.setText(tr("btn_start"))
+        self.stop_btn.setText(tr("btn_stop"))
+        self._store.setTitle(tr("store_title"))
+        self.task_edit.setPlaceholderText(tr("task_placeholder"))
+        self._store_form.labelForField(self.task_edit).setText(tr("label_folder"))
+        self._store_form.labelForField(self.path_label).setText(tr("label_path"))
+        self._save_box.setTitle(tr("save_group"))
         for key, cb in self._save_checks.items():
-            cb.setText(cap.tr(f"save_{key}"))
-        self.recalib_btn.setText(cap.tr("btn_recalib"))
-        self._seg.setTitle(cap.tr("seg_title"))
-        self.seg_start_btn.setText(cap.tr("btn_seg_start"))
-        self.seg_end_btn.setText(cap.tr("btn_seg_end"))
-        self.seg_hint.setText(cap.tr(self._seg_hint_key))
+            cb.setText(tr(f"save_{key}"))
+        self.recalib_btn.setText(tr("btn_recalib"))
+        self._seg.setTitle(tr("seg_title"))
+        self.seg_start_btn.setText(tr("btn_seg_start"))
+        self.seg_end_btn.setText(tr("btn_seg_end"))
+        self.seg_hint.setText(tr(self._seg_hint_key))
         if self._worker is None:
-            self.status.setText(cap.tr("status_ready"))
+            self.status.setText(tr("status_ready"))
 
     # -- 设备来源（来自 DevicePanel 的扫描结果）--
     def set_devices(self, sns):
@@ -292,15 +298,15 @@ class CaptureConfigWidget(QWidget):
 
     def _import_config(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, self._cap.tr("import_dialog_title"),
-            self._cap.CONFIG_DIR, self._cap.tr("import_filter"))
+            self, tr("import_dialog_title"),
+            CONFIG_DIR, tr("import_filter"))
         if not path:
             return
         ok, msg = self._finger_widget.import_config(path)
         if ok:
             self.status.setText(msg)
         else:
-            QMessageBox.warning(self, self._cap.tr("import_warn_title"), msg)
+            QMessageBox.warning(self, tr("import_warn_title"), msg)
 
     def _start(self):
         # 防重入：整个启动流程（含下面的基线确认弹窗）期间只允许一次。
@@ -312,22 +318,22 @@ class CaptureConfigWidget(QWidget):
             # 扫描到但未连接（未出流）的 SN 不参与采集。
             sensors_sn = self._streaming_sns()
             if not sensors_sn:
-                QMessageBox.warning(self, self._cap.tr("start_no_device_title"),
-                                    self._cap.tr("start_no_device_msg"))
+                QMessageBox.warning(self, tr("start_no_device_title"),
+                                    tr("start_no_device_msg"))
                 return
             if self._gf515:
                 labels = self._finger_widget.labels_for(sensors_sn)
             else:
                 labels = list(sensors_sn)
             # 基线保护：标定与首帧基线要求传感器处于无按压状态，开始前显式确认
-            ans = QMessageBox.question(self, self._cap.tr("baseline_confirm_title"),
-                                       self._cap.tr("baseline_confirm_msg"))
+            ans = QMessageBox.question(self, tr("baseline_confirm_title"),
+                                       tr("baseline_confirm_msg"))
             if ans != QMessageBox.StandardButton.Yes:
                 return
             if self._gf515:
                 self._finger_widget.save_config()
             # 复用渲染线程已打开的设备（同一台相机不能并发打开）
-            self._worker = self._cap.DataCaptureWorker(
+            self._worker = DataCaptureWorker(
                 sensors_sn, labels, sensor_workers=self._sensor_workers())
             self._worker.status.connect(self._on_status)
             self._worker.streaming.connect(self._on_streaming)
@@ -342,7 +348,7 @@ class CaptureConfigWidget(QWidget):
             if self._gf515:
                 self._finger_widget.set_enabled(False)
             self.stop_btn.setEnabled(True)
-            self.status.setText(self._cap.tr("starting"))
+            self.status.setText(tr("starting"))
         finally:
             self._starting = False
 
@@ -371,7 +377,7 @@ class CaptureConfigWidget(QWidget):
             self._worker.request_stop()
             if self._worker.isRunning():
                 if not self._worker.wait(5000):
-                    self.status.setText(self._cap.tr("shutdown_timeout"))
+                    self.status.setText(tr("shutdown_timeout"))
         self._worker = None
         self._sync_start_button()
 
@@ -379,14 +385,14 @@ class CaptureConfigWidget(QWidget):
     def _seg_start(self):
         if not self._streaming_active():
             return
-        task = self._cap._sanitize_name(self.task_edit.text(), "")
+        task = _sanitize_name(self.task_edit.text(), "")
         if not task:
-            QMessageBox.warning(self, self._cap.tr("seg_no_task_title"),
-                                self._cap.tr("seg_no_task_msg"))
+            QMessageBox.warning(self, tr("seg_no_task_title"),
+                                tr("seg_no_task_msg"))
             return
         if not any(cb.isChecked() for cb in self._save_checks.values()):
-            QMessageBox.warning(self, self._cap.tr("start_no_type_title"),
-                                self._cap.tr("start_no_type_msg"))
+            QMessageBox.warning(self, tr("start_no_type_title"),
+                                tr("start_no_type_msg"))
             return
         self._push_spec()
         self._worker.start_episode()
@@ -404,7 +410,7 @@ class CaptureConfigWidget(QWidget):
             return
         save = {k for k, cb in self._save_checks.items() if cb.isChecked()}
         self._worker.set_spec({
-            "task": self._cap._sanitize_name(self.task_edit.text(), ""),
+            "task": _sanitize_name(self.task_edit.text(), ""),
             "save": save,
         })
 
@@ -422,7 +428,7 @@ class CaptureConfigWidget(QWidget):
             self._seg_hint_key = "hint_ready"
         else:
             self._seg_hint_key = "hint_recording"
-        self.seg_hint.setText(self._cap.tr(self._seg_hint_key))
+        self.seg_hint.setText(tr(self._seg_hint_key))
 
     # -- 信号槽 --
     def _on_status(self, msg):
@@ -434,7 +440,7 @@ class CaptureConfigWidget(QWidget):
 
     def _on_episode(self, on, desc):
         if on:
-            self.status.setText(self._cap.tr("episode_recording", desc=desc))
+            self.status.setText(tr("episode_recording", desc=desc))
         self._refresh_recording_ui()
 
     def _on_frame(self, payload):

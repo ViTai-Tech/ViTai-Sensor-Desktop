@@ -1,15 +1,11 @@
-#!/usr/bin/env python3
 # coding=utf-8
-"""
-ViTai 传感器数据采集（简化版，仅保留实时预览 + 采集一个功能）。
+"""ViTai 传感器数据采集引擎（供 app.widgets.capture_config 复用）。
 
-与 pipeline_gui.py 的第一个标签页等价，去掉了侧边栏导航、其它流水线步骤、
-COS 上传/下载与子进程运行逻辑，只留「ViTai 传感器实时预览 + 按「开始保存/停止保存」录制 episode」。
-
-用法:
-    python vitai_capture_gui.py                              # 启动界面
-    ... --dark                                               # 深色主题
-    ... --smoke                                              # 无显示器冒烟（配合 QT_QPA_PLATFORM=offscreen）
+只保留「采集」相关的可复用部分，界面由宿主提供：
+    - DataCaptureWorker / SegmentRecorder：后台采集 + 分段写盘（episode）
+    - FingerAssignWidget：左右手 ↔ SN 标定与配置持久化
+    - ColorCheckBox / tr() / STRINGS：共享的自绘复选框与中英文文案
+预览网格、按钮、状态栏等界面在 app/widgets/capture_config.py。
 
 依赖: PyQt6、pyvitaisdk、opencv、numpy（安装步骤见 README）。
 力模型解析 / 滑动状态等工具已内联在本文件内，无其它项目内依赖。
@@ -19,7 +15,6 @@ import json
 import os
 import queue
 import shutil
-import sys
 import threading
 import time
 from datetime import datetime
@@ -28,25 +23,24 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPointF, QRect, QRectF
-from PyQt6.QtGui import (
-    QColor, QGuiApplication, QImage, QPainter, QPalette, QPen, QPixmap,
-)
+from PyQt6.QtGui import QColor, QPainter, QPalette, QPen
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
-    QLabel, QLineEdit, QComboBox, QCheckBox, QPushButton, QScrollArea,
-    QSizePolicy, QGroupBox, QGridLayout, QMessageBox, QSplitter, QFileDialog,
+    QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QWidget,
 )
+from pyvitaisdk import VTSDataType, VTSDeviceFinder, VTSensor, VTSError
 
 # --------------------------------------------------------------------------- #
 # 路径与常量
 # --------------------------------------------------------------------------- #
-DATA_AE = os.path.dirname(os.path.abspath(__file__))
+# 录制数据与手指配置仍放在 app/capture_client/ 下（本模块原先所在目录），
+# 模块搬到 app/ 后位置不变，已有 episode 与 sensor_fingers.json 继续可用。
+DATA_AE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capture_client")
 DATA_DIR = os.path.join(DATA_AE, "data")
-CONFIG_DIR = os.path.join(DATA_AE, "config")     # 配置文件目录（本目录下的 config/）
+CONFIG_DIR = os.path.join(DATA_AE, "config")     # 配置文件目录（capture_client/config/）
 
 # 手指 ↔ SN 标定：固定左右手两组，每手 5 指；下拉框全局唯一。
-# 配置保存到本程序目录下 config/sensor_fingers.json（独立配置文件，不与其他程序共享；
-# 路径相对本脚本计算，客户把 vitai_capture_client 部署到任意目录都能正常读写）。
+# 配置保存到 capture_client/config/sensor_fingers.json（独立配置文件，不与其他程序共享；
+# 路径相对 app/ 计算，程序部署到任意目录都能正常读写）。
 HANDS = ["right", "left"]
 FINGERS = ["thumb", "index", "middle", "ring", "pinky"]
 CAPTURE_CONFIG_PATH = os.path.join(CONFIG_DIR, "sensor_fingers.json")
@@ -75,12 +69,10 @@ STRINGS = {
     "fingers_count": {"zh": "{hand} · {n} 根手指", "en": "{hand} · {n} fingers"},
     "unassigned": {"zh": "（未分配）", "en": "(Unassigned)"},
     # 按钮
-    "btn_detect": {"zh": "检测设备", "en": "Detect Devices"},
     "btn_import": {"zh": "导入配置 [可选]", "en": "Import Config [Optional]"},
     "btn_start": {"zh": "开始采集", "en": "Start Capture"},
     "btn_stop": {"zh": "停止采集", "en": "Stop Capture"},
     "btn_recalib": {"zh": "重新标定", "en": "Recalibrate"},
-    "btn_back_viewer": {"zh": "返回查看器", "en": "Back to Viewer"},
     # 存储设置
     "store_title": {"zh": "存储设置", "en": "Storage"},
     "task_placeholder": {"zh": "例如 cloth；数据存到 data/<此名>/", "en": "e.g. cloth; saved to data/<name>/"},
@@ -103,12 +95,8 @@ STRINGS = {
         "zh": "点「开始保存」开始录制一个 episode，点「停止保存」结束。",
         "en": "Click Start Saving to record an episode, Stop Saving to end.",
     },
-    # 状态 / 预览
+    # 状态
     "status_ready": {"zh": "就绪。", "en": "Ready."},
-    "preview_no_stream": {"zh": "尚未出流", "en": "No stream"},
-    # DetectWorker
-    "detect_fail": {"zh": "发现设备失败: {e}（suggestion: {s}）", "en": "Detect failed: {e} (suggestion: {s})"},
-    "detect_found": {"zh": "发现 {n} 台设备，请在下方为每根手指选择对应的 SN。", "en": "Found {n} device(s). Assign a SN to each finger below."},
     # DataCaptureWorker
     "cap_opening": {"zh": "开始打开并标定 {n} 台传感器（可能较慢，请耐心等待）...", "en": "Opening and calibrating {n} sensor(s) (may take a while)..."},
     "cap_not_found": {"zh": "未找到设备 {sn}（{lbl}），跳过。", "en": "Device {sn} ({lbl}) not found, skipped."},
@@ -154,14 +142,9 @@ STRINGS = {
     "cfg_imported": {"zh": "已导入 {applied} 项，自动匹配 {matched} 项。", "en": "Imported {applied} item(s), matched {matched}."},
     "cfg_unmatched": {"zh": "（未匹配项：设备未检测到或 SN 不一致，检测到后会再自动匹配）", "en": " (unmatched: device not detected or SN mismatch; will auto-match once detected)"},
     # 采集面板动作
-    "detecting": {"zh": "正在检测设备…", "en": "Detecting devices..."},
     "import_dialog_title": {"zh": "导入配置文件", "en": "Import config file"},
     "import_filter": {"zh": "配置文件 (*.json)", "en": "Config file (*.json)"},
     "import_warn_title": {"zh": "导入配置", "en": "Import config"},
-    "start_no_finger_title": {"zh": "未分配手指", "en": "No finger assigned"},
-    "start_no_finger_msg": {"zh": "请先检测设备，并为至少一根手指选择对应的 SN。", "en": "Detect devices and assign a SN to at least one finger first."},
-    "start_dup_title": {"zh": "SN 重复", "en": "Duplicate SN"},
-    "start_dup_msg": {"zh": "存在重复的 SN 分配，请检查下拉框。", "en": "Duplicate SN assignment; check the dropdowns."},
     "start_no_device_title": {"zh": "未检测到设备", "en": "No devices detected"},
     "start_no_device_msg": {"zh": "请先在顶部 DevicePanel 刷新并连接传感器。", "en": "Refresh and connect sensors in the DevicePanel first."},
     "starting": {"zh": "正在标定并出流…", "en": "Calibrating and streaming..."},
@@ -177,11 +160,6 @@ STRINGS = {
     "hint_ready": {"zh": "点「开始保存」开始录制一个 episode。", "en": "Click Start Saving to record an episode."},
     "hint_recording": {"zh": "录制中：点「停止保存」结束本段 episode_<N>。", "en": "Recording: click Stop Saving to end episode_<N>."},
     "episode_recording": {"zh": "录制中 -> {desc}", "en": "Recording -> {desc}"},
-    # 主窗口 / 菜单
-    "menu_view": {"zh": "视图", "en": "View"},
-    "menu_dark": {"zh": "深色模式", "en": "Dark Mode"},
-    # 语言切换按钮（显示目标语言）
-    "lang_switch": {"zh": "EN", "en": "中文"},
 }
 
 
@@ -350,11 +328,8 @@ def _resolve_force_model_path(sn: str) -> Optional[str]:
 
 def _force_data_types():
     """返回本 SDK 版本可用的 (6D 力, 滑动状态) 数据类型；老版本缺失的为 None。"""
-    try:
-        from pyvitaisdk import VTSDataType as D
-    except Exception:  # noqa: BLE001
-        return None, None
-    return getattr(D, "FORCE6D_VECTOR", None), getattr(D, "SLIP_STATE", None)
+    return (getattr(VTSDataType, "FORCE6D_VECTOR", None),
+            getattr(VTSDataType, "SLIP_STATE", None))
 
 
 def _force6d_vector(value) -> np.ndarray:
@@ -376,7 +351,7 @@ def _force6d_vector(value) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- #
-# 采集（原生内嵌）：跑在后台线程
+# 采集工具函数
 # --------------------------------------------------------------------------- #
 
 
@@ -419,29 +394,6 @@ def _next_episode_index(task):
             except ValueError:
                 pass
     return (max(idxs) + 1) if idxs else 0
-
-
-class DetectWorker(QThread):
-    """只做设备枚举（VTSDeviceFinder().get_devices()），不标定，速度很快。
-
-    信号：
-        devices_found(list)    SN 列表（str）
-        status(str)            状态文本
-    """
-    devices_found = pyqtSignal(list)
-    status = pyqtSignal(str)
-
-    def run(self):
-        from pyvitaisdk import VTSDeviceFinder, VTSError
-        try:
-            finder = VTSDeviceFinder()
-            devices = finder.get_devices()
-        except VTSError as e:
-            self.status.emit(tr("detect_fail", e=e, s=getattr(e, 'suggestion', '')))
-            return
-        sns = [d.SN for d in devices]
-        self.devices_found.emit(sns)
-        self.status.emit(tr("detect_found", n=len(sns)))
 
 
 # --------------------------------------------------------------------------- #
@@ -775,8 +727,6 @@ class DataCaptureWorker(QThread):
 
     # -- worker 线程 --
     def run(self):
-        from pyvitaisdk import VTSensor, VTSDeviceFinder, VTSDataType, VTSError
-
         sensors = []  # [(sn, sensor), ...]
         force_models = {}   # SN -> 力模型路径（None = 该传感器只记形变，不请求 6 维力）
         rec = None
@@ -798,7 +748,7 @@ class DataCaptureWorker(QThread):
                     force_models[sn] = "shared"
                     self.status.emit(tr("cap_opened", sn=sn))
             else:
-                # 独立模式：自己打开并标定设备（standalone GUI 使用）
+                # 独立模式：宿主未提供渲染线程 worker 时自己打开并标定设备
                 finder = VTSDeviceFinder()
                 for sn, lbl in zip(self._sensors_sn, self._labels):
                     dev = finder.get_device_by_sn(sn)
@@ -1306,18 +1256,6 @@ class FingerAssignWidget(QWidget):
         for g in self._hand_groups:
             g.setEnabled(on)
 
-    def collect_assign(self):
-        """按采集顺序（右手拇指→小指、再左手）返回 (sensors_sn, labels)，只含已分配的手指。"""
-        sensors_sn, labels = [], []
-        for hand in HANDS:
-            for finger in FINGERS:
-                lbl = f"{hand}_{finger}"
-                sn = self._desired.get(lbl)
-                if sn:
-                    sensors_sn.append(sn)
-                    labels.append(lbl)
-        return sensors_sn, labels
-
     def labels_for(self, sns):
         """返回与 sns 等长的标签列表：SN 被分配到某手指则用 手指标签，否则用 SN 本身。
 
@@ -1393,625 +1331,11 @@ class FingerAssignWidget(QWidget):
         return True, msg
 
 
-class SensorTile(QWidget):
-    """单个传感器的预览格：画面 + 标签/|F| 文字叠加 + 滑动状态色点；点击在放大/还原间切换。
-
-    画面由采集线程隔帧推入（BGR ndarray），paintEvent 内等比缩放绘制。
-    """
-
-    clicked = pyqtSignal(str)
-
-    # 滑动状态色点（与 SLIP_STATE_DOC 对应；未知/无数据显示灰点）
-    _SLIP_COLOR = {1: "#4CAF50", 2: "#FFC107", 3: "#FF9800", 4: "#F44336",
-                   5: "#9E9E9E", 6: "#2196F3"}
-
-    def __init__(self, sn, parent=None):
-        super().__init__(parent)
-        self.sn = sn
-        self._pix = None
-        self._title = sn
-        self._stats = {}
-        self.setMinimumSize(200, 150)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-    def set_content(self, bgr, title, stats):
-        """更新一格的画面与叠加信息；bgr 为 None 时保留上一帧画面。"""
-        if bgr is not None:
-            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-            h, w = rgb.shape[:2]
-            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-            self._pix = QPixmap.fromImage(qimg.copy())
-        if title:
-            self._title = title
-        self._stats = stats or {}
-        self.update()
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.sn)
-        super().mousePressEvent(event)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.fillRect(self.rect(), QColor(20, 20, 22))
-        if self._pix is not None and not self._pix.isNull():
-            scaled = self._pix.scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio,
-                                      Qt.TransformationMode.SmoothTransformation)
-            x = (self.width() - scaled.width()) // 2
-            y = (self.height() - scaled.height()) // 2
-            p.drawPixmap(x, y, scaled)
-        st = self._stats
-        info = self._title
-        if st.get("fabs") is not None:
-            info += f"  |F|={st['fabs']:.3f}"
-        p.setPen(QColor(255, 255, 255))
-        p.drawText(8, 18, info)
-        slip = st.get("slip")
-        if slip is not None:
-            p.setBrush(QColor(self._SLIP_COLOR.get(slip, "#9E9E9E")))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(self.width() - 20, 8, 12, 12)
-        p.end()
-
-
-class CapturePanel(QWidget):
-    """实时预览 + 数据采集面板。
-
-    布局：左侧为控制栏（检测/采集按钮、手指标定、存储设置、任务录制），
-          右侧为实时预览（占满剩余空间，随窗口缩放）。
-    录制完全由「开始保存 / 停止保存」按钮驱动，每按一对 = 一个 episode_<N>。
-    """
-
-    # 请求主窗口路由回到实时查看器页
-    back_to_viewer = pyqtSignal()
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("panel")
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._worker = None
-        self._detector = None
-        self._starting = False   # 启动流程进行中（含基线确认弹窗）→ 防重复触发
-        self._sns = []  # 检测到的 SN 列表
-        self._finger_widget = FingerAssignWidget()
-
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(24, 20, 24, 20)
-        outer.setSpacing(20)
-
-        # ---- 左侧：控制栏（包一层滚动区，窗口矮时可滚动） ----
-        left = QVBoxLayout()
-        left.setSpacing(10)
-
-        self._title = QLabel(tr("app_title"))
-        self._title.setObjectName("panelTitle")
-        title_row = QHBoxLayout()
-        title_row.setSpacing(8)
-        self.back_viewer_btn = QPushButton(tr("btn_back_viewer"))
-        self.back_viewer_btn.setObjectName("langBtn")
-        self.back_viewer_btn.setToolTip("返回实时查看器")
-        self.back_viewer_btn.clicked.connect(self.back_to_viewer.emit)
-        self.lang_btn = QPushButton(tr("lang_switch"))
-        self.lang_btn.setObjectName("langBtn")
-        self.lang_btn.setToolTip("Switch language / 切换语言")
-        self.lang_btn.clicked.connect(self._toggle_lang)
-        title_row.addWidget(self._title)
-        title_row.addWidget(self.back_viewer_btn)
-        title_row.addStretch(1)
-        title_row.addWidget(self.lang_btn)
-        self._sub = QLabel(tr("panel_subtitle"))
-        self._sub.setObjectName("panelSub")
-        self._sub.setWordWrap(True)
-        left.addLayout(title_row)
-        left.addWidget(self._sub)
-        left.addSpacing(4)
-
-        # 采集/停止按钮
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        self.detect_btn = QPushButton(tr("btn_detect"))
-        self.import_btn = QPushButton(tr("btn_import"))
-        self.start_btn = QPushButton(tr("btn_start"))
-        self.stop_btn = QPushButton(tr("btn_stop"))
-        self.recalib_btn = QPushButton(tr("btn_recalib"))
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(False)
-        self.recalib_btn.setEnabled(False)   # 出流后才可重新标定
-        self.detect_btn.clicked.connect(self._detect)
-        self.import_btn.clicked.connect(self._import_config)
-        self.start_btn.clicked.connect(self._start)
-        self.stop_btn.clicked.connect(self._shutdown)
-        self.recalib_btn.clicked.connect(self._recalibrate)
-        btn_row.addWidget(self.detect_btn)
-        btn_row.addWidget(self.import_btn)
-        btn_row.addWidget(self.start_btn)
-        btn_row.addWidget(self.stop_btn)
-        btn_row.addWidget(self.recalib_btn)
-        left.addLayout(btn_row)
-
-        left.addWidget(self._finger_widget)
-
-        # 存储设置
-        self._store = QGroupBox(tr("store_title"))
-        self._store_form = QFormLayout(self._store)
-        self._store_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.task_edit = QLineEdit()
-        self.task_edit.setPlaceholderText(tr("task_placeholder"))
-        self.task_edit.textChanged.connect(self._refresh_path)
-        self._store_form.addRow(tr("label_folder"), self.task_edit)
-        self.path_label = QLabel("")
-        self.path_label.setObjectName("panelSub")
-        self.path_label.setWordWrap(True)
-        self._store_form.addRow(tr("label_path"), self.path_label)
-        left.addWidget(self._store)
-
-        # 保存内容：每类数据一个复选框；采集线程按勾选向 SDK 请求数据类型（不勾不取不存）
-        self._save_box = QGroupBox(tr("save_group"))
-        save_col = QVBoxLayout(self._save_box)
-        self._save_checks = {}
-        for key in SAVE_TYPES:
-            cb = ColorCheckBox(tr(f"save_{key}"))
-            cb.setChecked(key not in ("diff", "raw"))   # 默认不勾 diff 视频与原生视频
-            cb.toggled.connect(self._push_spec)
-            self._save_checks[key] = cb
-            save_col.addWidget(cb)
-        left.addWidget(self._save_box)
-
-        # 任务录制（episode）
-        self._seg = QGroupBox(tr("seg_title"))
-        seg_form = QFormLayout(self._seg)
-        seg_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        seg_btn_row = QHBoxLayout()
-        seg_btn_row.setSpacing(8)
-        self.seg_start_btn = QPushButton(tr("btn_seg_start"))
-        self.seg_end_btn = QPushButton(tr("btn_seg_end"))
-        self.seg_start_btn.setEnabled(False)
-        self.seg_end_btn.setEnabled(False)
-        self.seg_start_btn.clicked.connect(self._seg_start)
-        self.seg_end_btn.clicked.connect(self._seg_stop)
-        seg_btn_row.addWidget(self.seg_start_btn)
-        seg_btn_row.addWidget(self.seg_end_btn)
-        seg_btn_row.addStretch(1)
-        seg_form.addRow("", seg_btn_row)
-        self.seg_hint = QLabel(tr("seg_hint_idle"))
-        self._seg_hint_key = "seg_hint_idle"
-        self.seg_hint.setObjectName("panelSub")
-        self.seg_hint.setWordWrap(True)
-        seg_form.addRow("", self.seg_hint)
-        left.addWidget(self._seg)
-
-        left.addStretch(1)
-
-        left_widget = QWidget()
-        left_widget.setLayout(left)
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setWidget(left_widget)
-        left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        left_scroll.setMinimumWidth(380)
-
-        # 底部状态行（标定/出流进度、错误提示）：放在滚动区**之外**，窗口再矮也始终可见
-        self.status = QLabel(tr("status_ready"))
-        self.status.setObjectName("panelSub")
-        self.status.setWordWrap(True)
-        left_pane = QWidget()
-        left_pane_layout = QVBoxLayout(left_pane)
-        left_pane_layout.setContentsMargins(0, 0, 0, 0)
-        left_pane_layout.setSpacing(8)
-        left_pane_layout.addWidget(left_scroll, 1)
-        left_pane_layout.addWidget(self.status)
-
-        # ---- 右侧：实时预览（5 行手指 × 2 列左右手；点击单格放大，再点还原） ----
-        self._tiles = {}          # SN -> SensorTile
-        self._tile_order = []     # 建格顺序，网格按此稳定排序
-        self._tile_labels = {}    # SN -> '{hand}_{finger}'（决定格子在网格里的行列）
-        self._zoomed = None       # 当前放大的 SN（None = 网格视图）
-        self._placeholder = QLabel(tr("preview_no_stream"))
-        self._placeholder.setObjectName("preview")
-        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_widget = QWidget()
-        right_widget.setObjectName("panel")
-        self._tile_grid = QGridLayout(right_widget)
-        self._tile_grid.setContentsMargins(0, 0, 0, 0)
-        self._tile_grid.setSpacing(6)
-        self._tile_grid.addWidget(self._placeholder, 0, 0)
-
-        # 左右两栏用 QSplitter：初始各占一半，可拖动调整
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(8)
-        splitter.addWidget(left_pane)
-        splitter.addWidget(right_widget)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([500, 500])
-        outer.addWidget(splitter, 1)
-
-        self._refresh_path()
-        self.setFocus()
-        _RETRANSLATE.append(self.retranslate)
-
-    def _refresh_path(self):
-        task = _sanitize_name(self.task_edit.text(), "unnamed")
-        self.path_label.setText(os.path.join(DATA_DIR, task) + "/")
-
-    # -- 语言切换 --
-    def _toggle_lang(self):
-        set_language("en" if LANG == "zh" else "zh")
-
-    def retranslate(self):
-        """语言切换时刷新本面板所有静态文案；动态状态由各自槽函数在下次触发时用 tr() 重取。"""
-        self._title.setText(tr("app_title"))
-        self._sub.setText(tr("panel_subtitle"))
-        self.back_viewer_btn.setText(tr("btn_back_viewer"))
-        self.lang_btn.setText(tr("lang_switch"))
-        self.detect_btn.setText(tr("btn_detect"))
-        self.import_btn.setText(tr("btn_import"))
-        self.start_btn.setText(tr("btn_start"))
-        self.stop_btn.setText(tr("btn_stop"))
-        self._store.setTitle(tr("store_title"))
-        self.task_edit.setPlaceholderText(tr("task_placeholder"))
-        self._store_form.labelForField(self.task_edit).setText(tr("label_folder"))
-        self._store_form.labelForField(self.path_label).setText(tr("label_path"))
-        self._save_box.setTitle(tr("save_group"))
-        for key, cb in self._save_checks.items():
-            cb.setText(tr(f"save_{key}"))
-        self.recalib_btn.setText(tr("btn_recalib"))
-        self._seg.setTitle(tr("seg_title"))
-        self.seg_start_btn.setText(tr("btn_seg_start"))
-        self.seg_end_btn.setText(tr("btn_seg_end"))
-        self.seg_hint.setText(tr(self._seg_hint_key))
-        if not self._tiles:
-            self._placeholder.setText(tr("preview_no_stream"))
-        if self._worker is None:
-            self.status.setText(tr("status_ready"))
-
-    # -- 动作 --
-    def _detect(self):
-        if self._detector is not None and self._detector.isRunning():
-            return
-        self.detect_btn.setEnabled(False)
-        self.status.setText(tr("detecting"))
-        self._detector = DetectWorker()
-        self._detector.devices_found.connect(self._on_devices_found)
-        self._detector.status.connect(self._on_status)
-        self._detector.finished.connect(self._on_detect_finished)
-        self._detector.start()
-
-    def _import_config(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, tr("import_dialog_title"), CONFIG_DIR, tr("import_filter"))
-        if not path:
-            return
-        ok, msg = self._finger_widget.import_config(path)
-        if ok:
-            self.status.setText(msg)
-        else:
-            QMessageBox.warning(self, tr("import_warn_title"), msg)
-
-    def _start(self):
-        # 防重入：整个启动流程（含下面的基线确认弹窗）期间只允许一次。
-        # 否则弹窗还开着时又来了点击/回车，会叠出第二个确认框并起第二个采集线程。
-        if self._starting or (self._worker is not None and self._worker.isRunning()):
-            return
-        self._starting = True
-        try:
-            sensors_sn, labels = self._finger_widget.collect_assign()
-            if not sensors_sn:
-                QMessageBox.warning(self, tr("start_no_finger_title"), tr("start_no_finger_msg"))
-                return
-            if len(set(sensors_sn)) != len(sensors_sn):
-                QMessageBox.warning(self, tr("start_dup_title"), tr("start_dup_msg"))
-                return
-            # 基线保护：标定与首帧基线要求传感器处于无按压状态，开始前显式确认
-            ans = QMessageBox.question(self, tr("baseline_confirm_title"),
-                                       tr("baseline_confirm_msg"))
-            if ans != QMessageBox.StandardButton.Yes:
-                return
-            self._finger_widget.save_config()
-            self._worker = DataCaptureWorker(sensors_sn, labels)
-            self._worker.status.connect(self._on_status)
-            self._worker.frame.connect(self._on_frame)
-            self._worker.streaming.connect(self._on_streaming)
-            self._worker.episode_changed.connect(self._on_episode)
-            self._worker.finished.connect(self._on_finished)
-            self._push_spec()  # 注入当前渲染模式，出流第一帧就按正确模式跑
-            self._worker.start()
-            self.detect_btn.setEnabled(False)
-            self.start_btn.setEnabled(False)
-            self._finger_widget.set_enabled(False)
-            self.stop_btn.setEnabled(True)
-            self.status.setText(tr("starting"))
-        finally:
-            self._starting = False
-
-    def _shutdown(self):
-        if self._worker is not None:
-            self._worker.request_stop()
-        self.setFocus()
-
-    def is_running(self):
-        """采集是否正在进行（数据线程在运行 = 正在出流/采集）。"""
-        return self._worker is not None and self._worker.isRunning()
-
-    def has_active_episode(self):
-        """是否正在录制 episode（落盘中）。"""
-        return self._worker is not None and self._worker.isRunning() and self._worker.episode_active()
-
-    def discard_recording(self):
-        """请求丢弃当前正在录制的 episode（停止采集时直接删除，不落盘）。"""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.discard_episode()
-
-    def shutdown(self):
-        """关闭窗口/退出时调用：停 detector/worker 线程并等待其释放传感器。"""
-        if self._detector is not None:
-            if self._detector.isRunning():
-                self._detector.wait(1000)
-            self._detector = None
-        if self._worker is not None:
-            self._worker.request_stop()
-            if self._worker.isRunning():
-                if not self._worker.wait(5000):
-                    self.status.setText(tr("shutdown_timeout"))
-        self._worker = None
-
-    # -- episode 录制动作 --
-    def _seg_start(self):
-        if self._worker is None or not self._worker.isRunning():
-            return
-        task = _sanitize_name(self.task_edit.text(), "")
-        if not task:
-            QMessageBox.warning(self, tr("seg_no_task_title"), tr("seg_no_task_msg"))
-            return
-        if not any(cb.isChecked() for cb in self._save_checks.values()):
-            QMessageBox.warning(self, tr("start_no_type_title"), tr("start_no_type_msg"))
-            return
-        self._push_spec()
-        self._worker.start_episode()
-        self.setFocus()
-
-    def _seg_stop(self):
-        if self._worker is None or not self._worker.isRunning():
-            return
-        self._worker.stop_episode()
-        self.setFocus()
-
-    def _push_spec(self):
-        """把当前 UI 的录制选项（任务名 + 勾选的保存内容）推给采集线程。"""
-        if self._worker is None:
-            return
-        save = {k for k, cb in self._save_checks.items() if cb.isChecked()}
-        self._worker.set_spec({
-            "task": _sanitize_name(self.task_edit.text(), ""),
-            "save": save,
-        })
-
-    def _refresh_recording_ui(self):
-        streaming = self._worker is not None and self._worker.isRunning()
-        recording = streaming and self._worker.episode_active()
-        self.seg_start_btn.setEnabled(streaming and not recording)
-        self.seg_end_btn.setEnabled(recording)
-        if not streaming:
-            self._seg_hint_key = "hint_no_stream"
-        elif not recording:
-            self._seg_hint_key = "hint_ready"
-        else:
-            self._seg_hint_key = "hint_recording"
-        self.seg_hint.setText(tr(self._seg_hint_key))
-
-    # -- 信号槽 --
-    def _on_status(self, msg):
-        self.status.setText(msg)
-
-    def _on_devices_found(self, sns):
-        self._sns = list(sns)
-        self._finger_widget.set_sns(sns)
-        self.start_btn.setEnabled(True)
-
-    def _on_detect_finished(self):
-        if self._detector is not None:
-            self._detector.wait(1000)
-            self._detector = None
-        self.detect_btn.setEnabled(True)
-
-    def _on_streaming(self, on):
-        self.recalib_btn.setEnabled(bool(on))
-        if not on:
-            self._clear_tiles()
-        self._refresh_recording_ui()
-
-    def _on_episode(self, on, desc):
-        # 结束时状态栏保留 worker 刚发出的 episode_ended_detail（帧数/体积/丢帧）
-        if on:
-            self.status.setText(tr("episode_recording", desc=desc))
-        self._refresh_recording_ui()
-
-    def _on_frame(self, payload):
-        """采集线程隔帧推来的预览包 {"tiles", "stats", "labels"}；新传感器首次出现时建格。"""
-        try:
-            tiles = payload.get("tiles") or {}
-            stats = payload.get("stats") or {}
-            labels = payload.get("labels") or {}
-            for sn, bgr in tiles.items():
-                lbl = labels.get(sn) or ""
-                self._tile_labels[sn] = lbl
-                tile = self._tiles.get(sn)
-                if tile is None:
-                    tile = SensorTile(sn)
-                    tile.clicked.connect(self._on_tile_clicked)
-                    self._tiles[sn] = tile
-                    self._tile_order.append(sn)
-                    self._relayout_tiles()   # 标签已就位，新格直接落到正确的行列
-                tile.set_content(bgr, f"{lbl} · {sn}" if lbl else sn, stats.get(sn))
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _tile_cell(self, sn):
-        """SN -> (行, 列)：行 = 手指序（拇指→小指），列 = 0 左手 / 1 右手。
-
-        没有手指标定（或标签不在 HANDS×FINGERS 内）时返回 None。
-        """
-        hand, _, finger = (self._tile_labels.get(sn) or "").partition("_")
-        if hand in HANDS and finger in FINGERS:
-            return FINGERS.index(finger), (0 if hand == "left" else 1)
-        return None
-
-    def _relayout_tiles(self):
-        """重排卡片网格：5 行(手指) × 2 列(左手在左、右手在右)；_zoomed 指向某格时该格单独铺满。
-
-        有任何一格没有手指标定时，退回「按建格顺序每行 2 列」，未标定的传感器不会被丢掉。
-        只标定部分手指时，空缺的行/列会被 QGridLayout 收缩。
-
-        布局操作有两处硬约束，改这段时别丢：
-          1) takeAt() 之后只 hide()，**不要 setParent(None)**——解除父级会让 widget 变成
-             真正的顶层窗口，桌面上就会一台传感器冒出一个独立小窗口（还会自己消失）；
-          2) 重新入格必须「先 addWidget 认父、再 show()」，否则同样会闪出一个独立窗口。
-        """
-        while self._tile_grid.count():
-            item = self._tile_grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.hide()   # 只移出布局 + 隐藏；父级保持为右侧容器，就不会变成窗口
-        sns = [sn for sn in self._tile_order if sn in self._tiles]
-        if self._zoomed in self._tiles:
-            for sn, t in self._tiles.items():
-                if sn != self._zoomed:
-                    t.hide()
-            zoomed = self._tiles[self._zoomed]
-            self._tile_grid.addWidget(zoomed, 0, 0)
-            zoomed.show()
-            self._placeholder.hide()
-            return
-        self._zoomed = None
-        if not sns:
-            self._tile_grid.addWidget(self._placeholder, 0, 0)
-            self._placeholder.show()
-            return
-        self._placeholder.hide()
-        cells = [self._tile_cell(sn) for sn in sns]
-        finger_grid = all(c is not None for c in cells)
-        for i, sn in enumerate(sns):
-            t = self._tiles[sn]
-            r, c = cells[i] if finger_grid else (i // 2, i % 2)
-            self._tile_grid.addWidget(t, r, c)
-            t.show()
-
-    def _on_tile_clicked(self, sn):
-        self._zoomed = None if self._zoomed == sn else sn
-        self._relayout_tiles()
-
-    def _clear_tiles(self):
-        for t in self._tiles.values():
-            t.hide()          # 父级保持不动（见 _relayout_tiles 的注释），hide 后交给 deleteLater
-            t.deleteLater()
-        self._tiles = {}
-        self._tile_order = []
-        self._tile_labels = {}
-        self._zoomed = None
-        self._relayout_tiles()
-
-    def _recalibrate(self):
-        """「重新标定」：SDK 重设背景，深度/marker 基线随下一帧重建。"""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.request_recalibrate()
-        self.setFocus()
-
-    def _on_finished(self):
-        if self._worker is not None:
-            self._worker.wait(5000)
-            self._worker = None
-        self.detect_btn.setEnabled(True)
-        self.start_btn.setEnabled(True)
-        self._finger_widget.set_enabled(True)
-        self.seg_start_btn.setEnabled(False)
-        self.seg_end_btn.setEnabled(False)
-        self.stop_btn.setEnabled(False)
-
-    def keyPressEvent(self, event):
-        k = event.key()
-        if k in (Qt.Key.Key_Q, Qt.Key.Key_Escape):
-            self._shutdown()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
-# --------------------------------------------------------------------------- #
-# 主题
-# --------------------------------------------------------------------------- #
-LIGHT_QSS = """
-* { font-family: -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang SC",
-    "Microsoft YaHei", sans-serif; }
-QMainWindow, QWidget#panel { background: #FFFFFF; }
-QLabel { color: #1D1D1F; }
-QLabel#panelTitle { font-size: 22px; font-weight: 700; color: #1D1D1F; }
-QLabel#panelSub { font-size: 13px; color: #8E8E93; }
-QLabel#preview { background: #F5F5F7; border: 1px solid #8E8E93; border-radius: 10px; color: #8E8E93; }
-QGroupBox { font-weight: 600; color: #1D1D1F; border: 1px solid #D1D1D6; border-radius: 10px;
-    margin-top: 10px; padding-top: 8px; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
-QLineEdit, QComboBox {
-    background: #F5F5F7; border: 1px solid #8E8E93; border-radius: 10px;
-    padding: 7px 12px; color: #1D1D1F; min-height: 22px;
-}
-QLineEdit:focus, QComboBox:focus { border: 1px solid #3A3A3C; }
-QComboBox::drop-down { border: none; width: 22px; }
-QComboBox QAbstractItemView { background: #FFFFFF; border: 1px solid #8E8E93; border-radius: 10px;
-    selection-background-color: #E3E3E8; }
-QPushButton { background: #F2F2F5; border: 1px solid #8E8E93; border-radius: 10px;
-    padding: 6px 16px; color: #1D1D1F; }
-QPushButton:hover { background: #E8E8ED; }
-QPushButton:disabled { color: #B0B0B5; background: #F2F2F5; border-color: #D1D1D6; }
-QCheckBox { color: #1D1D1F; spacing: 8px; }
-QScrollArea { border: none; background: #FFFFFF; }
-QScrollArea > QWidget > QWidget { background: #FFFFFF; }
-"""
-
-DARK_QSS = """
-* { font-family: -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang SC",
-    "Microsoft YaHei", sans-serif; }
-QMainWindow, QWidget#panel { background: #1C1C1E; }
-QLabel { color: #F5F5F7; }
-QLabel#panelTitle { font-size: 22px; font-weight: 700; color: #F5F5F7; }
-QLabel#panelSub { font-size: 13px; color: #98989D; }
-QLabel#preview { background: #2C2C2E; border: 1px solid #8E8E93; border-radius: 10px; color: #98989D; }
-QGroupBox { font-weight: 600; color: #F5F5F7; border: 1px solid #3A3A3C; border-radius: 10px;
-    margin-top: 10px; padding-top: 8px; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; }
-QLineEdit, QComboBox {
-    background: #2C2C2E; border: 1px solid #8E8E93; border-radius: 10px;
-    padding: 7px 12px; color: #F5F5F7; min-height: 22px;
-}
-QLineEdit:focus, QComboBox:focus { border: 1px solid #D1D1D6; }
-QComboBox::drop-down { border: none; width: 22px; }
-QComboBox QAbstractItemView { background: #2C2C2E; border: 1px solid #8E8E93; border-radius: 10px;
-    selection-background-color: #3A3A3C; }
-QPushButton { background: #3A3A3C; border: 1px solid #8E8E93; border-radius: 10px;
-    padding: 6px 16px; color: #F5F5F7; }
-QPushButton:hover { background: #48484A; }
-QPushButton:disabled { color: #636366; background: #2C2C2E; border-color: #3A3A3C; }
-QCheckBox { color: #F5F5F7; spacing: 8px; }
-QScrollArea { border: none; background: #1C1C1E; }
-QScrollArea > QWidget > QWidget { background: #1C1C1E; }
-"""
-
-
 # --------------------------------------------------------------------------- #
 # 自绘复选框（参考 widgets/checkable_combo.py 的 _CheckColorDelegate）
 # 直接 override paintEvent 用 QPainter 画勾选框与文字，完全不依赖原生指示器
 # 或 QSS 的 ::indicator，保证在各平台/样式下边框与对号都稳定显示。
 # --------------------------------------------------------------------------- #
-# 深色主题标志：None=自动感知（供 main.py 宿主等未调用 _set_check_dark 的入口），
-# True/False=强制指定（vitai_capture_gui 自己的 main()/深色菜单开关）。
-_CHECK_DARK = None
-
-
-def _set_check_dark(on):
-    global _CHECK_DARK
-    _CHECK_DARK = on
 
 
 class ColorCheckBox(QCheckBox):
@@ -2027,23 +1351,16 @@ class ColorCheckBox(QCheckBox):
         self.setStyleSheet("QCheckBox { spacing: 0px; }")
 
     def _text_color(self):
-        """取与当前主题文字一致的颜色。
-
-        - 宿主入口（main.py）只设置调色板、不会调用 _set_check_dark，
-          此时直接用调色板的 WindowText（即主题定义的文字颜色）。
-        - 本模块自己的 main()/深色开关会强制 _CHECK_DARK，用固定常量，
-          与 QSS 中 QCheckBox 的 color 保持一致。
-        """
+        """取与当前主题文字一致的颜色：优先用调色板的 WindowText（宿主主题
+        定义的文字色），取不到时按窗口背景明暗兜底。"""
         if not self.isEnabled():
             return QColor("#9A9A9A")
-        if _CHECK_DARK is None:
-            c = self.palette().color(QPalette.ColorRole.WindowText)
-            if c.isValid() and c.lightness() > 0:
-                return c
-            dark = self.palette().color(
-                QPalette.ColorRole.Window).lightness() < 128
-            return QColor("#F5F5F7") if dark else QColor("#1D1D1F")
-        return QColor("#F5F5F7") if _CHECK_DARK else QColor("#1D1D1F")
+        c = self.palette().color(QPalette.ColorRole.WindowText)
+        if c.isValid() and c.lightness() > 0:
+            return c
+        dark = self.palette().color(
+            QPalette.ColorRole.Window).lightness() < 128
+        return QColor("#F5F5F7") if dark else QColor("#1D1D1F")
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -2078,70 +1395,3 @@ class ColorCheckBox(QCheckBox):
             self.text(),
         )
         painter.end()
-
-
-# --------------------------------------------------------------------------- #
-# 主窗口
-# --------------------------------------------------------------------------- #
-class MainWindow(QMainWindow):
-    def __init__(self, dark=False):
-        super().__init__()
-        self.setWindowTitle(tr("app_title"))
-        # 窗口自适应当前屏幕：取可用屏幕尺寸的 90%
-        screen = QGuiApplication.primaryScreen().availableGeometry()
-        self.resize(int(screen.width() * 0.9), int(screen.height() * 0.9))
-        self.setMinimumSize(760, 560)
-
-        # 视图菜单：深色模式
-        self._menu = self.menuBar().addMenu(tr("menu_view"))
-        self.dark_act = self._menu.addAction(tr("menu_dark"))
-        self.dark_act.setCheckable(True)
-        self.dark_act.setChecked(dark)
-        self.dark_act.toggled.connect(
-            lambda on: (
-                _set_check_dark(on),
-                QApplication.instance().setStyleSheet(DARK_QSS if on else LIGHT_QSS),
-            )
-        )
-
-        self.panel = CapturePanel()
-        self.setCentralWidget(self.panel)
-        _RETRANSLATE.append(self.retranslate)
-
-    def retranslate(self):
-        self.setWindowTitle(tr("app_title"))
-        self._menu.setTitle(tr("menu_view"))
-        self.dark_act.setText(tr("menu_dark"))
-
-    def closeEvent(self, event):
-        self.panel.shutdown()
-        super().closeEvent(event)
-
-
-# --------------------------------------------------------------------------- #
-# 入口
-# --------------------------------------------------------------------------- #
-def main():
-    app = QApplication(sys.argv)
-    # 复选框用自绘 ColorCheckBox（见文件上方），不依赖原生指示器或 QSS ::indicator，
-    # 保证边框/对号在各平台/样式下都能稳定渲染。
-    dark = "--dark" in sys.argv
-    _set_check_dark(dark)
-    app.setApplicationName(tr("app_title"))
-    app.setStyleSheet(DARK_QSS if dark else LIGHT_QSS)
-    # 让默认控件背景跟随主题（主内容区纯白 / 深色），避免视口/普通 widget 显示系统灰
-    pal = app.palette()
-    bg = QColor("#1C1C1E") if dark else QColor("#FFFFFF")
-    pal.setColor(QPalette.ColorRole.Window, bg)
-    pal.setColor(QPalette.ColorRole.Base, bg)
-    app.setPalette(pal)
-    win = MainWindow(dark=dark)
-    win.show()
-    if "--smoke" in sys.argv:
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(400, app.quit)
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()

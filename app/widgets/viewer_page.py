@@ -10,7 +10,9 @@ hand / gripper 拆成两个独立路由的查看器。主窗口 MainWindow 作�
 负责在 Home 页与各 ViewerPage 之间切换。
 """
 
-from PyQt6.QtCore import Qt, pyqtSignal
+import time
+
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -44,6 +46,10 @@ class ViewerPage(QWidget):
         self._workers = {}   # sn -> SensorWorker
         self._configs = []   # 已连接的传感器配置
         self._fps = {}       # sn -> 最近帧率
+        # 停止超时、仍在自行退出的 worker（sn -> SensorWorker）。卡在 SDK 打开/
+        # 标定里的线程不能强杀，只能等它自然退出后再回收。
+        self._orphan_workers = {}
+        self._pending_sns = set()  # 孤儿 worker 的 SN：相机可能仍被占用
         self._capture_visible = False  # 数据采集配置面板是否展开
 
         self._setup_ui()
@@ -247,7 +253,12 @@ class ViewerPage(QWidget):
 
     def streaming_sns(self):
         """对外暴露正在出流（独占相机）的 SN 列表，供首页设备计数兜底。"""
-        return self._rendering_sns()
+        sns = self._rendering_sns()
+        # 还在自行退出的孤儿 worker：相机可能尚未释放，扫描不到，也计入
+        for sn in self._pending_sns:
+            if sn not in sns:
+                sns.append(sn)
+        return sns
 
     def _sensor_workers_for_capture(self):
         """返回渲染线程 worker 表，供采集线程复用同一台设备（不再二次开相机）。"""
@@ -348,20 +359,66 @@ class ViewerPage(QWidget):
             self.set_status(f"错误: {message[:60]}")
             self.device_panel.on_worker_disconnected()
 
-    def _remove_worker(self, sn):
+    def _remove_worker(self, sn, timeout_ms=2000):
+        """停止并移除某个传感器 worker。
+
+        注意：不能用 terminate()。灵巧手有多个传感器，线程可能正卡在 SDK 的
+        打开/标定或取帧调用里，terminate 会让 QThread 收不到 finished，
+        随后的 wait() 就变成永久阻塞，界面表现为「点了没反应」。
+        这里的做法是：超时后断开信号、转入孤儿列表，由定时器轮询等它自然退出。
+        """
         worker = self._workers.pop(sn, None)
-        if worker is not None:
+        if worker is None:
+            return
+
+        worker.stop()
+        if not worker.isRunning() or worker.wait(timeout_ms):
+            worker.deleteLater()
+            return
+
+        # 还在 SDK 调用里：断开信号（避免回调打到已重置的视图），延后回收
+        worker.blockSignals(True)
+        self._orphan_workers[sn] = worker
+        self._pending_sns.add(sn)
+        QTimer.singleShot(500, self._reap_orphan_workers)
+
+    def _reap_orphan_workers(self):
+        """轮询回收此前停止超时的 worker（线程退出后才能安全销毁）。"""
+        for sn, worker in list(self._orphan_workers.items()):
             if worker.isRunning():
-                worker.stop()
-                worker.wait(3000)
-            if worker.isRunning():
-                worker.terminate()
-                worker.wait()
+                continue
+            worker.deleteLater()
+            self._orphan_workers.pop(sn, None)
+            self._pending_sns.discard(sn)
+        if self._orphan_workers:
+            QTimer.singleShot(1000, self._reap_orphan_workers)
 
     def _stop_all_workers(self):
-        for sn in list(self._workers.keys()):
-            self._remove_worker(sn)
+        workers = dict(self._workers)
         self._workers.clear()
+
+        # 先对全部 worker 发出停止信号，让它们并行收尾
+        for worker in workers.values():
+            worker.stop()
+
+        # 共用同一个等待窗口（而不是逐个 wait 超时后累加）：
+        # 灵巧手有多台传感器，串行等待会让返回首页卡上十几秒
+        deadline = time.monotonic() + 2.0
+        for worker in workers.values():
+            if worker.isRunning():
+                worker.wait(max(0, int((deadline - time.monotonic()) * 1000)))
+
+        for sn, worker in workers.items():
+            if worker.isRunning():
+                # 仍卡在 SDK 调用里：断开信号，转入孤儿列表等它自己退出
+                worker.blockSignals(True)
+                self._orphan_workers[sn] = worker
+                self._pending_sns.add(sn)
+            else:
+                worker.deleteLater()
+        if self._orphan_workers:
+            QTimer.singleShot(500, self._reap_orphan_workers)
+
         panel = getattr(self, "capture_panel", None)
         if panel is not None:
             panel.set_rendering_streaming(False)
@@ -410,6 +467,12 @@ class ViewerPage(QWidget):
         except Exception:
             pass
         self._stop_all_workers()
+        # 退出前给孤儿线程一点收尾时间，尽量避免 QThread 在运行中被析构
+        for sn, worker in list(self._orphan_workers.items()):
+            if worker.wait(1000):
+                worker.deleteLater()
+                self._orphan_workers.pop(sn, None)
+                self._pending_sns.discard(sn)
 
     # ------------------------------------------------------------------ #
     # 可见性：页面隐藏时停止设备扫描（避免多页同时扫描），显示时恢复

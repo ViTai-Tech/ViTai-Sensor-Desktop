@@ -83,6 +83,7 @@ class _CategoryCard(QFrame):
         for feat in c["features"]:
             item = QLabel(f"✓  {feat}")
             item.setObjectName("CardFeature")
+            item.setWordWrap(True)
             v.addWidget(item)
 
         v.addStretch(1)
@@ -173,10 +174,10 @@ class HomePage(QWidget):
             logo.setObjectName("HomeLogoImage")
             logo.setPixmap(
                 logo_pix.scaledToHeight(
-                    44, Qt.TransformationMode.SmoothTransformation
+                    64, Qt.TransformationMode.SmoothTransformation
                 )
             )
-            logo.setFixedHeight(52)
+            logo.setFixedHeight(72)
         else:
             logo = QLabel("ViTai")
             logo.setObjectName("HomeLogo")
@@ -184,7 +185,7 @@ class HomePage(QWidget):
         header.addStretch(1)
         root.addLayout(header)
 
-        title = QLabel("视触觉传感器查看器")
+        title = QLabel("ViTai视触觉传感器查看器")
         title.setObjectName("HomeTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root.addWidget(title)
@@ -203,6 +204,8 @@ class HomePage(QWidget):
         cards_row.addStretch(1)
         for c in SENSOR_CATEGORIES:
             card = _CategoryCard(c, self)
+            # 固定宽度，保证各卡片宽度一致（内容长短不同不影响布局）
+            card.setFixedWidth(360)
             self._cards.append(card)
             card.selected.connect(self.category_selected.emit)
             cards_row.addWidget(card, 0, Qt.AlignmentFlag.AlignTop)
