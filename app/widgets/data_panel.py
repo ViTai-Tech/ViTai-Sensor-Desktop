@@ -2,7 +2,7 @@ import sys
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, QGridLayout
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QGuiApplication, QFont
 import pyqtgraph as pg
 import numpy as np
 from collections import deque
@@ -169,17 +169,17 @@ class DataPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
-        layout.addWidget(QLabel("力", font=QFont("", 10, QFont.Weight.Bold)))
+        layout.addWidget(QLabel("力", font=QFont(QGuiApplication.font().family(), 10, QFont.Weight.Bold)))
         self.force_plots = ForcePlots()
         layout.addWidget(self.force_plots)
 
         slip_group = QGroupBox("滑动检测")
         sg_layout = QHBoxLayout(slip_group)
         self.slip_indicator = QLabel("●")
-        self.slip_indicator.setFont(QFont("", 18))
+        self.slip_indicator.setFont(QFont(QGuiApplication.font().family(), 18))
         self.slip_indicator.setStyleSheet("color: #2ecc71")
         self.slip_label = QLabel("--")
-        self.slip_label.setFont(QFont("", 14, QFont.Weight.Bold))
+        self.slip_label.setFont(QFont(QGuiApplication.font().family(), 14, QFont.Weight.Bold))
         sg_layout.addWidget(self.slip_indicator)
         sg_layout.addWidget(self.slip_label)
         sg_layout.addStretch()

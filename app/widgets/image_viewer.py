@@ -2,7 +2,7 @@ import sys
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel
 from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
+from PyQt6.QtGui import QGuiApplication, QImage, QPixmap, QFont, QColor
 import cv2
 import numpy as np
 from app.sdk import VTSDataType
@@ -38,11 +38,11 @@ class ImageLabel(QLabel):
         if loading:
             self.setPixmap(QPixmap())
             self.setText("加载中...")
-            self.setFont(QFont("", 20, QFont.Weight.Bold))
+            self.setFont(QFont(QGuiApplication.font().family(), 20, QFont.Weight.Bold))
             self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
         else:
             self.setText("无信号")
-            self.setFont(QFont())
+            self.setFont(QGuiApplication.font())
             self.setStyleSheet("background-color: #f0f0f0; border: 1px solid #d5d5d5; border-radius: 6px; color: #999999;")
 
     def set_image(self, img_array, is_depth=False):
@@ -101,7 +101,7 @@ class ForceValueWidget(QWidget):
         layout.setSpacing(18)
 
         val_font = QFont(_MONO_FONT, 28, QFont.Weight.Bold)
-        lbl_font = QFont("", 14, QFont.Weight.Bold)
+        lbl_font = QFont(QGuiApplication.font().family(), 14, QFont.Weight.Bold)
 
         fx_row = QHBoxLayout()
         fx_row.setSpacing(8)
